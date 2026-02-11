@@ -49,13 +49,13 @@ static unique_ptr<FunctionData> ReadTextLinesBind(ClientContext &context, TableF
 
 	if (files.empty()) {
 		// No files found with original path - try parsing for embedded line spec
-		auto [parsed_path, parsed_selection] = LineSelection::ParsePathWithLineSpec(input_path);
-		if (parsed_path != input_path) {
+		auto parsed_result = LineSelection::ParsePathWithLineSpec(input_path);
+		if (parsed_result.first != input_path) {
 			// Path was parsed differently, try globbing with the extracted path
-			files = fs.GlobFiles(parsed_path, context, FileGlobOptions::ALLOW_EMPTY);
+			files = fs.GlobFiles(parsed_result.first, context, FileGlobOptions::ALLOW_EMPTY);
 			if (!files.empty()) {
-				glob_pattern = parsed_path;
-				path_line_selection = std::move(parsed_selection);
+				glob_pattern = parsed_result.first;
+				path_line_selection = std::move(parsed_result.second);
 			}
 		}
 	}
