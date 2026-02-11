@@ -13,25 +13,25 @@ TableFunction ReadTextLinesLateralFunction();
 TableFunction ParseTextLinesFunction();
 
 void ReadLinesExtension::Load(ExtensionLoader &loader) {
-    // Register read_text_lines table function
-    loader.RegisterFunction(ReadTextLinesFunction());
+	// Register read_text_lines table function
+	loader.RegisterFunction(ReadTextLinesFunction());
 
-    // Register read_text_lines_lateral for lateral join support
-    loader.RegisterFunction(ReadTextLinesLateralFunction());
+	// Register read_text_lines_lateral for lateral join support
+	loader.RegisterFunction(ReadTextLinesLateralFunction());
 
-    // Register parse_text_lines table function
-    loader.RegisterFunction(ParseTextLinesFunction());
+	// Register parse_text_lines table function
+	loader.RegisterFunction(ParseTextLinesFunction());
 }
 
 std::string ReadLinesExtension::Name() {
-    return "read_lines";
+	return "read_lines";
 }
 
 std::string ReadLinesExtension::Version() const {
 #ifdef EXT_VERSION_READ_LINES
-    return EXT_VERSION_READ_LINES;
+	return EXT_VERSION_READ_LINES;
 #else
-    return "";
+	return "";
 #endif
 }
 
@@ -40,14 +40,13 @@ std::string ReadLinesExtension::Version() const {
 extern "C" {
 
 DUCKDB_EXTENSION_API void read_lines_init(duckdb::DatabaseInstance &db) {
-    duckdb::DuckDB db_wrapper(db);
-    db_wrapper.LoadStaticExtension<duckdb::ReadLinesExtension>();
+	duckdb::DuckDB db_wrapper(db);
+	db_wrapper.LoadStaticExtension<duckdb::ReadLinesExtension>();
 }
 
 DUCKDB_EXTENSION_API const char *read_lines_version() {
-    return duckdb::DuckDB::LibraryVersion();
+	return duckdb::DuckDB::LibraryVersion();
 }
-
 }
 
 #ifndef DUCKDB_EXTENSION_MAIN
