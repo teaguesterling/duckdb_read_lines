@@ -1,0 +1,5 @@
+2024-01-01 INFO Starting
+2024-01-01 DEBUG Loading config
+2024-01-01 ERROR Failed to connect
+2024-01-01 INFO Retrying
+2024-01-01 INFO Connected

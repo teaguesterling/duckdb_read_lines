@@ -102,3 +102,107 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 4	d	6
 5	e	8
 8	h	14
+
+# =============================================================================
+# read_text_lines file-based tests
+# =============================================================================
+
+# Test reading a simple file
+query IIII
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset, file_path LIKE '%simple.txt'
+FROM read_text_lines('test/data/simple.txt');
+----
+1	line one	0	true
+2	line two	9	true
+3	line three	18	true
+4	line four	29	true
+5	line five	39	true
+
+# Test reading specific lines from file
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_text_lines('test/data/simple.txt', lines := '2-4');
+----
+2	line two
+3	line three
+4	line four
+
+# Test reading single line from file
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_text_lines('test/data/simple.txt', lines := 3);
+----
+3	line three
+
+# Test file with no trailing newline
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_text_lines('test/data/no_trailing_newline.txt');
+----
+1	first
+2	second
+3	third
+
+# Test empty file
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_text_lines('test/data/empty.txt');
+----
+
+# Test single line file
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_text_lines('test/data/single_line.txt');
+----
+1	only one line
+
+# Test glob pattern - multiple files
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_text_lines('test/data/log*.txt')
+WHERE content LIKE '%ERROR%'
+ORDER BY file_path, line_number;
+----
+3	2024-01-01 ERROR Failed to connect
+3	2024-01-02 ERROR Out of memory
+
+# Test glob pattern - count lines per file
+query II
+SELECT file_path LIKE '%log1.txt' AS is_log1, count(*)
+FROM read_text_lines('test/data/log*.txt')
+GROUP BY file_path
+ORDER BY file_path;
+----
+true	5
+false	3
+
+# Test context with file
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_text_lines('test/data/simple.txt', lines := 3, context := 1);
+----
+2	line two
+3	line three
+4	line four
+
+# Test reading lines with list selection from file
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_text_lines('test/data/simple.txt', lines := [1, 3, 5]);
+----
+1	line one
+3	line three
+5	line five
+
+# Test nonexistent file returns empty (glob with no matches)
+query I
+SELECT count(*) FROM read_text_lines('nonexistent_file_pattern_*.txt');
+----
+0
+
+# Test ignore_errors parameter exists and works
+query I
+SELECT count(*)
+FROM read_text_lines('test/data/simple.txt', ignore_errors := true);
+----
+5
