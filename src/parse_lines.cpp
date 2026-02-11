@@ -57,7 +57,7 @@ static unique_ptr<FunctionData> ParseTextLinesBind(ClientContext &context, Table
 		line_selection.AddContext(before_context, after_context);
 	}
 
-	// Define output columns (no file_path for parse_text_lines)
+	// Define output columns (no file_path for parse_lines)
 	return_types.push_back(LogicalType::BIGINT); // line_number
 	names.push_back("line_number");
 
@@ -149,7 +149,7 @@ static void ParseTextLinesFunction(ClientContext &context, TableFunctionInput &d
 }
 
 TableFunction ParseTextLinesFunction() {
-	TableFunction func("parse_text_lines", {LogicalType::VARCHAR}, ParseTextLinesFunction, ParseTextLinesBind,
+	TableFunction func("parse_lines", {LogicalType::VARCHAR}, ParseTextLinesFunction, ParseTextLinesBind,
 	                   ParseTextLinesInit);
 
 	// Named parameters

@@ -194,7 +194,7 @@ static void ReadTextLinesFunction(ClientContext &context, TableFunctionInput &da
 }
 
 TableFunction ReadTextLinesFunction() {
-	TableFunction func("read_text_lines", {LogicalType::VARCHAR}, ReadTextLinesFunction, ReadTextLinesBind,
+	TableFunction func("read_lines", {LogicalType::VARCHAR}, ReadTextLinesFunction, ReadTextLinesBind,
 	                   ReadTextLinesInit);
 
 	func.named_parameters["lines"] = LogicalType::ANY;
@@ -207,7 +207,7 @@ TableFunction ReadTextLinesFunction() {
 }
 
 // =============================================================================
-// Lateral join version: read_text_lines_lateral
+// Lateral join version: read_lines_lateral
 // =============================================================================
 
 struct ReadTextLinesLateralBindData : public TableFunctionData {
@@ -406,7 +406,7 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 }
 
 TableFunction ReadTextLinesLateralFunction() {
-	TableFunction func("read_text_lines_lateral", {LogicalType::VARCHAR}, nullptr, ReadTextLinesLateralBind, nullptr,
+	TableFunction func("read_lines_lateral", {LogicalType::VARCHAR}, nullptr, ReadTextLinesLateralBind, nullptr,
 	                   ReadTextLinesLateralLocalInit);
 
 	func.in_out_function = ReadTextLinesLateralInOut;

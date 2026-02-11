@@ -4,55 +4,55 @@
 
 # Before we load the extension, this will fail
 statement error
-SELECT * FROM read_text_lines('test.txt');
+SELECT * FROM read_lines('test.txt');
 ----
-Catalog Error: Table Function with name read_text_lines does not exist!
+Catalog Error: Table Function with name read_lines does not exist!
 
 # Require statement will ensure this test is run with this extension loaded
 require read_lines
 
-# Test parse_text_lines with simple input
+# Test parse_lines with simple input
 # Use rtrim to strip line endings for easier test comparison
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3');
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'line1\nline2\nline3');
 ----
 1	line1	0
 2	line2	6
 3	line3	12
 
-# Test parse_text_lines with line selection - single line
+# Test parse_lines with line selection - single line
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3', lines := 2);
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'line1\nline2\nline3', lines := 2);
 ----
 2	line2	6
 
-# Test parse_text_lines with line selection - range
+# Test parse_lines with line selection - range
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := '2-4');
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'line1\nline2\nline3\nline4\nline5', lines := '2-4');
 ----
 2	line2	6
 3	line3	12
 4	line4	18
 
-# Test parse_text_lines with line selection - list
+# Test parse_lines with line selection - list
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := [1, 3, 5]);
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'line1\nline2\nline3\nline4\nline5', lines := [1, 3, 5]);
 ----
 1	line1	0
 3	line3	12
 5	line5	24
 
-# Test parse_text_lines with context
+# Test parse_lines with context
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := 3, context := 1);
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'line1\nline2\nline3\nline4\nline5', lines := 3, context := 1);
 ----
 2	line2	6
 3	line3	12
 4	line4	18
 
-# Test parse_text_lines with before/after
+# Test parse_lines with before/after
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := 3, before := 1, after := 2);
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'line1\nline2\nline3\nline4\nline5', lines := 3, before := 1, after := 2);
 ----
 2	line2	6
 3	line3	12
@@ -61,18 +61,18 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test empty input
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines('');
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines('');
 ----
 
 # Test single line without newline
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines('single line');
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines('single line');
 ----
 1	single line	0
 
 # Test Windows-style line endings (content preserves \r\n, we strip for comparison)
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\r\nline2\r\nline3');
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'line1\r\nline2\r\nline3');
 ----
 1	line1	0
 2	line2	7
@@ -80,7 +80,7 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test mixed line endings
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\r\nline3\rline4');
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'line1\nline2\r\nline3\rline4');
 ----
 1	line1	0
 2	line2	6
@@ -89,13 +89,13 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Verify line endings are actually preserved in content
 query I
-SELECT length(content) FROM parse_text_lines(E'ab\ncd') WHERE line_number = 1;
+SELECT length(content) FROM parse_lines(E'ab\ncd') WHERE line_number = 1;
 ----
 3
 
 # Test line range with string list (ranges only)
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne\nf\ng\nh\ni\nj', lines := ['1', '3-5', '8']);
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc\nd\ne\nf\ng\nh\ni\nj', lines := ['1', '3-5', '8']);
 ----
 1	a	0
 3	c	4
@@ -103,17 +103,17 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 5	e	8
 8	h	14
 
-# Test parse_text_lines with struct range (inclusive by default)
+# Test parse_lines with struct range (inclusive by default)
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := {start: 2, stop: 4});
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'line1\nline2\nline3\nline4\nline5', lines := {start: 2, stop: 4});
 ----
 2	line2	6
 3	line3	12
 4	line4	18
 
-# Test parse_text_lines with list of struct ranges
+# Test parse_lines with list of struct ranges
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne\nf\ng\nh\ni\nj', lines := [{start: 1, stop: 2}, {start: 5, stop: 6}, {start: 9, stop: 10}]);
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc\nd\ne\nf\ng\nh\ni\nj', lines := [{start: 1, stop: 2}, {start: 5, stop: 6}, {start: 9, stop: 10}]);
 ----
 1	a	0
 2	b	2
@@ -124,20 +124,20 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test struct range with single line (start equals stop)
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3', lines := {start: 2, stop: 2});
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'line1\nline2\nline3', lines := {start: 2, stop: 2});
 ----
 2	line2	6
 
 # Test struct range with inclusive: false (exclusive stop, like Python range)
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := {start: 2, stop: 4, inclusive: false});
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'line1\nline2\nline3\nline4\nline5', lines := {start: 2, stop: 4, inclusive: false});
 ----
 2	line2	6
 3	line3	12
 
 # Test struct range with inclusive: true (explicit, same as default)
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := {start: 2, stop: 4, inclusive: true});
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'line1\nline2\nline3\nline4\nline5', lines := {start: 2, stop: 4, inclusive: true});
 ----
 2	line2	6
 3	line3	12
@@ -149,7 +149,7 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test string range with symmetric context (+/-N)
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := '3 +/-1');
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'line1\nline2\nline3\nline4\nline5', lines := '3 +/-1');
 ----
 2	line2	6
 3	line3	12
@@ -157,7 +157,7 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test string range with before context only (-B)
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := '3 -2');
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'line1\nline2\nline3\nline4\nline5', lines := '3 -2');
 ----
 1	line1	0
 2	line2	6
@@ -165,7 +165,7 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test string range with after context only (+A)
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := '3 +2');
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'line1\nline2\nline3\nline4\nline5', lines := '3 +2');
 ----
 3	line3	12
 4	line4	18
@@ -173,7 +173,7 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test string range with asymmetric context (-B+A)
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := '3 -1+2');
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'line1\nline2\nline3\nline4\nline5', lines := '3 -1+2');
 ----
 2	line2	6
 3	line3	12
@@ -182,7 +182,7 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test string range with asymmetric context with space (-B +A)
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := '3 -1 +2');
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'line1\nline2\nline3\nline4\nline5', lines := '3 -1 +2');
 ----
 2	line2	6
 3	line3	12
@@ -191,7 +191,7 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test range string with per-entry context
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne\nf\ng\nh\ni\nj', lines := '4-6 +/-1');
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc\nd\ne\nf\ng\nh\ni\nj', lines := '4-6 +/-1');
 ----
 3	c	4
 4	d	6
@@ -201,7 +201,7 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test struct range with before/after context
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := {start: 3, stop: 3, before: 1, after: 2});
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'line1\nline2\nline3\nline4\nline5', lines := {start: 3, stop: 3, before: 1, after: 2});
 ----
 2	line2	6
 3	line3	12
@@ -210,7 +210,7 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test struct range with context shorthand
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := {start: 3, stop: 3, context: 1});
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'line1\nline2\nline3\nline4\nline5', lines := {start: 3, stop: 3, context: 1});
 ----
 2	line2	6
 3	line3	12
@@ -218,7 +218,7 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test list with mixed per-entry context
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne\nf\ng\nh\ni\nj', lines := ['2 -1', '8 +1']);
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc\nd\ne\nf\ng\nh\ni\nj', lines := ['2 -1', '8 +1']);
 ----
 1	a	0
 2	b	2
@@ -231,13 +231,13 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test struct with single 'line' field
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := {line: 3});
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'line1\nline2\nline3\nline4\nline5', lines := {line: 3});
 ----
 3	line3	12
 
 # Test struct with 'line' and context
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := {line: 3, context: 1});
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'line1\nline2\nline3\nline4\nline5', lines := {line: 3, context: 1});
 ----
 2	line2	6
 3	line3	12
@@ -245,7 +245,7 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test struct with 'lines' array
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne\nf\ng\nh\ni\nj', lines := {lines: [2, 5, 8]});
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc\nd\ne\nf\ng\nh\ni\nj', lines := {lines: [2, 5, 8]});
 ----
 2	b	2
 5	e	8
@@ -253,7 +253,7 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test struct with 'lines' array and context
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne\nf\ng\nh\ni\nj', lines := {lines: [3, 7], context: 1});
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc\nd\ne\nf\ng\nh\ni\nj', lines := {lines: [3, 7], context: 1});
 ----
 2	b	2
 3	c	4
@@ -264,7 +264,7 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test struct with 'lines' and before/after
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne\nf\ng\nh\ni\nj', lines := {lines: [5], before: 1, after: 2});
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc\nd\ne\nf\ng\nh\ni\nj', lines := {lines: [5], before: 1, after: 2});
 ----
 4	d	6
 5	e	8
@@ -273,7 +273,7 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test list of structs with mixed forms (DuckDB unifies struct types)
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne\nf\ng\nh\ni\nj', lines := [{line: 2}, {start: 5, stop: 6}, {lines: [9, 10]}]);
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc\nd\ne\nf\ng\nh\ni\nj', lines := [{line: 2}, {start: 5, stop: 6}, {lines: [9, 10]}]);
 ----
 2	b	2
 5	e	8
@@ -287,7 +287,7 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test head form with dash: -3 (first 3 lines)
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne', lines := '-3');
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc\nd\ne', lines := '-3');
 ----
 1	a	0
 2	b	2
@@ -295,7 +295,7 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test head form with ellipsis: ...3
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne', lines := '...3');
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc\nd\ne', lines := '...3');
 ----
 1	a	0
 2	b	2
@@ -303,7 +303,7 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test tail form with dash: 3- (from line 3 to end)
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne', lines := '3-');
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc\nd\ne', lines := '3-');
 ----
 3	c	4
 4	d	6
@@ -311,7 +311,7 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test tail form with ellipsis: 3...
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne', lines := '3...');
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc\nd\ne', lines := '3...');
 ----
 3	c	4
 4	d	6
@@ -319,7 +319,7 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test struct head form: {stop: 3}
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne', lines := {stop: 3});
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc\nd\ne', lines := {stop: 3});
 ----
 1	a	0
 2	b	2
@@ -327,7 +327,7 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test struct tail form: {start: 3}
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne', lines := {start: 3});
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc\nd\ne', lines := {start: 3});
 ----
 3	c	4
 4	d	6
@@ -335,7 +335,7 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test half-bounded with context
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne', lines := '-2 +1');
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc\nd\ne', lines := '-2 +1');
 ----
 1	a	0
 2	b	2
@@ -343,7 +343,7 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test ellipsis full range: 2...4
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne', lines := '2...4');
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc\nd\ne', lines := '2...4');
 ----
 2	b	2
 3	c	4
@@ -355,19 +355,19 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test context that extends before line 1 (should clamp to 1)
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc', lines := '1 -5');
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc', lines := '1 -5');
 ----
 1	a	0
 
 # Test context that extends past end of file (should just include what exists)
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc', lines := '3 +10');
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc', lines := '3 +10');
 ----
 3	c	4
 
 # Test overlapping ranges get merged
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne', lines := ['2 +/-1', '3 +/-1']);
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc\nd\ne', lines := ['2 +/-1', '3 +/-1']);
 ----
 1	a	0
 2	b	2
@@ -376,12 +376,12 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test line beyond file length returns nothing
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc', lines := 100);
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc', lines := 100);
 ----
 
 # Test line selection on empty input
 query III
-SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines('', lines := 1);
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines('', lines := 1);
 ----
 
 # =============================================================================
@@ -390,19 +390,19 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 
 # Test invalid line number (0)
 statement error
-SELECT * FROM parse_text_lines(E'a\nb\nc', lines := 0);
+SELECT * FROM parse_lines(E'a\nb\nc', lines := 0);
 ----
 Line number must be >= 1
 
 # Test invalid line number (negative)
 statement error
-SELECT * FROM parse_text_lines(E'a\nb\nc', lines := -1);
+SELECT * FROM parse_lines(E'a\nb\nc', lines := -1);
 ----
 Line number must be >= 1
 
 # Test invalid range (end < start)
 statement error
-SELECT * FROM parse_text_lines(E'a\nb\nc', lines := '5-3');
+SELECT * FROM parse_lines(E'a\nb\nc', lines := '5-3');
 ----
 Line range end must be >= start
 
@@ -413,14 +413,14 @@ Line range end must be >= start
 # Test path with single line: file:N
 query II
 SELECT line_number, rtrim(content, chr(10) || chr(13))
-FROM read_text_lines('test/data/simple.txt:3');
+FROM read_lines('test/data/simple.txt:3');
 ----
 3	line three
 
 # Test path with range: file:N-M
 query II
 SELECT line_number, rtrim(content, chr(10) || chr(13))
-FROM read_text_lines('test/data/simple.txt:2-4');
+FROM read_lines('test/data/simple.txt:2-4');
 ----
 2	line two
 3	line three
@@ -429,7 +429,7 @@ FROM read_text_lines('test/data/simple.txt:2-4');
 # Test path with head form: file:-N
 query II
 SELECT line_number, rtrim(content, chr(10) || chr(13))
-FROM read_text_lines('test/data/simple.txt:-2');
+FROM read_lines('test/data/simple.txt:-2');
 ----
 1	line one
 2	line two
@@ -437,7 +437,7 @@ FROM read_text_lines('test/data/simple.txt:-2');
 # Test path with tail form: file:N-
 query II
 SELECT line_number, rtrim(content, chr(10) || chr(13))
-FROM read_text_lines('test/data/simple.txt:4-');
+FROM read_lines('test/data/simple.txt:4-');
 ----
 4	line four
 5	line five
@@ -445,7 +445,7 @@ FROM read_text_lines('test/data/simple.txt:4-');
 # Test path with context: file:N +/-C
 query II
 SELECT line_number, rtrim(content, chr(10) || chr(13))
-FROM read_text_lines('test/data/simple.txt:3 +/-1');
+FROM read_lines('test/data/simple.txt:3 +/-1');
 ----
 2	line two
 3	line three
@@ -454,7 +454,7 @@ FROM read_text_lines('test/data/simple.txt:3 +/-1');
 # Test path with ellipsis range: file:N...M
 query II
 SELECT line_number, rtrim(content, chr(10) || chr(13))
-FROM read_text_lines('test/data/simple.txt:2...4');
+FROM read_lines('test/data/simple.txt:2...4');
 ----
 2	line two
 3	line three
@@ -463,18 +463,18 @@ FROM read_text_lines('test/data/simple.txt:2...4');
 # Test explicit lines param overrides path-embedded (uses lines param, ignores :3)
 query II
 SELECT line_number, rtrim(content, chr(10) || chr(13))
-FROM read_text_lines('test/data/simple.txt:3', lines := 1);
+FROM read_lines('test/data/simple.txt:3', lines := 1);
 ----
 1	line one
 
 # =============================================================================
-# read_text_lines file-based tests
+# read_lines file-based tests
 # =============================================================================
 
 # Test reading a simple file
 query IIII
 SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset, file_path LIKE '%simple.txt'
-FROM read_text_lines('test/data/simple.txt');
+FROM read_lines('test/data/simple.txt');
 ----
 1	line one	0	true
 2	line two	9	true
@@ -485,7 +485,7 @@ FROM read_text_lines('test/data/simple.txt');
 # Test reading specific lines from file
 query II
 SELECT line_number, rtrim(content, chr(10) || chr(13))
-FROM read_text_lines('test/data/simple.txt', lines := '2-4');
+FROM read_lines('test/data/simple.txt', lines := '2-4');
 ----
 2	line two
 3	line three
@@ -494,14 +494,14 @@ FROM read_text_lines('test/data/simple.txt', lines := '2-4');
 # Test reading single line from file
 query II
 SELECT line_number, rtrim(content, chr(10) || chr(13))
-FROM read_text_lines('test/data/simple.txt', lines := 3);
+FROM read_lines('test/data/simple.txt', lines := 3);
 ----
 3	line three
 
 # Test file with no trailing newline
 query II
 SELECT line_number, rtrim(content, chr(10) || chr(13))
-FROM read_text_lines('test/data/no_trailing_newline.txt');
+FROM read_lines('test/data/no_trailing_newline.txt');
 ----
 1	first
 2	second
@@ -510,20 +510,20 @@ FROM read_text_lines('test/data/no_trailing_newline.txt');
 # Test empty file
 query II
 SELECT line_number, rtrim(content, chr(10) || chr(13))
-FROM read_text_lines('test/data/empty.txt');
+FROM read_lines('test/data/empty.txt');
 ----
 
 # Test single line file
 query II
 SELECT line_number, rtrim(content, chr(10) || chr(13))
-FROM read_text_lines('test/data/single_line.txt');
+FROM read_lines('test/data/single_line.txt');
 ----
 1	only one line
 
 # Test glob pattern - multiple files
 query II
 SELECT line_number, rtrim(content, chr(10) || chr(13))
-FROM read_text_lines('test/data/log*.txt')
+FROM read_lines('test/data/log*.txt')
 WHERE content LIKE '%ERROR%'
 ORDER BY file_path, line_number;
 ----
@@ -533,7 +533,7 @@ ORDER BY file_path, line_number;
 # Test glob pattern - count lines per file
 query II
 SELECT file_path LIKE '%log1.txt' AS is_log1, count(*)
-FROM read_text_lines('test/data/log*.txt')
+FROM read_lines('test/data/log*.txt')
 GROUP BY file_path
 ORDER BY file_path;
 ----
@@ -543,7 +543,7 @@ false	3
 # Test context with file
 query II
 SELECT line_number, rtrim(content, chr(10) || chr(13))
-FROM read_text_lines('test/data/simple.txt', lines := 3, context := 1);
+FROM read_lines('test/data/simple.txt', lines := 3, context := 1);
 ----
 2	line two
 3	line three
@@ -552,7 +552,7 @@ FROM read_text_lines('test/data/simple.txt', lines := 3, context := 1);
 # Test reading lines with list selection from file
 query II
 SELECT line_number, rtrim(content, chr(10) || chr(13))
-FROM read_text_lines('test/data/simple.txt', lines := [1, 3, 5]);
+FROM read_lines('test/data/simple.txt', lines := [1, 3, 5]);
 ----
 1	line one
 3	line three
@@ -560,26 +560,26 @@ FROM read_text_lines('test/data/simple.txt', lines := [1, 3, 5]);
 
 # Test nonexistent file returns empty (glob with no matches)
 query I
-SELECT count(*) FROM read_text_lines('nonexistent_file_pattern_*.txt');
+SELECT count(*) FROM read_lines('nonexistent_file_pattern_*.txt');
 ----
 0
 
 # Test ignore_errors parameter exists and works
 query I
 SELECT count(*)
-FROM read_text_lines('test/data/simple.txt', ignore_errors := true);
+FROM read_lines('test/data/simple.txt', ignore_errors := true);
 ----
 5
 
 # =============================================================================
-# read_text_lines_lateral tests (for lateral join support)
+# read_lines_lateral tests (for lateral join support)
 # =============================================================================
 
 # Test basic lateral join with VALUES
 query III
 SELECT v.path, l.line_number, rtrim(l.content, chr(10) || chr(13))
 FROM (VALUES ('test/data/single_line.txt')) AS v(path),
-     read_text_lines_lateral(v.path) AS l;
+     read_lines_lateral(v.path) AS l;
 ----
 test/data/single_line.txt	1	only one line
 
@@ -587,7 +587,7 @@ test/data/single_line.txt	1	only one line
 query II
 SELECT v.path LIKE '%log1%' AS is_log1, count(*)
 FROM (VALUES ('test/data/log1.txt'), ('test/data/log2.txt')) AS v(path),
-     read_text_lines_lateral(v.path) AS l
+     read_lines_lateral(v.path) AS l
 GROUP BY v.path
 ORDER BY v.path;
 ----

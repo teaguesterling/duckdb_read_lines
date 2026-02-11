@@ -13,13 +13,13 @@ TableFunction ReadTextLinesLateralFunction();
 TableFunction ParseTextLinesFunction();
 
 void ReadLinesExtension::Load(ExtensionLoader &loader) {
-	// Register read_text_lines table function
+	// Register read_lines table function
 	loader.RegisterFunction(ReadTextLinesFunction());
 
-	// Register read_text_lines_lateral for lateral join support
+	// Register read_lines_lateral for lateral join support
 	loader.RegisterFunction(ReadTextLinesLateralFunction());
 
-	// Register parse_text_lines table function
+	// Register parse_lines table function
 	loader.RegisterFunction(ParseTextLinesFunction());
 }
 

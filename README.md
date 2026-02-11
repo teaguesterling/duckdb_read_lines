@@ -6,22 +6,22 @@ A DuckDB extension for reading line-based text files with line numbers and effic
 
 ```sql
 -- Read all lines
-SELECT * FROM read_text_lines('app.log');
+SELECT * FROM read_lines('app.log');
 
 -- Read specific lines (error message style)
-SELECT * FROM read_text_lines('src/file.py:42 +/-5');
+SELECT * FROM read_lines('src/file.py:42 +/-5');
 
 -- Read a range with context
-SELECT * FROM read_text_lines('app.log', lines := '100-200', context := 3);
+SELECT * FROM read_lines('app.log', lines := '100-200', context := 3);
 ```
 
 ## Functions
 
 | Function | Description |
 |----------|-------------|
-| `read_text_lines(path, ...)` | Read lines from file(s), supports glob patterns |
-| `read_text_lines_lateral(path)` | Lateral join variant for per-row file paths |
-| `parse_text_lines(text, ...)` | Parse lines from a string value |
+| `read_lines(path, ...)` | Read lines from file(s), supports glob patterns |
+| `read_lines_lateral(path)` | Lateral join variant for per-row file paths |
+| `parse_lines(text, ...)` | Parse lines from a string value |
 
 ### Output Columns
 
@@ -55,11 +55,11 @@ A line spec is a mini-language for selecting lines:
 Line specs can be embedded in the file path after a colon:
 
 ```sql
-read_text_lines('file.py:42')           -- line 42
-read_text_lines('file.py:10-20')        -- lines 10-20
-read_text_lines('file.py:42 +/-3')      -- line 42 with 3 lines context
-read_text_lines('file.py:-50')          -- first 50 lines
-read_text_lines('file.py:100-')         -- from line 100 to end
+read_lines('file.py:42')           -- line 42
+read_lines('file.py:10-20')        -- lines 10-20
+read_lines('file.py:42 +/-3')      -- line 42 with 3 lines context
+read_lines('file.py:-50')          -- first 50 lines
+read_lines('file.py:100-')         -- from line 100 to end
 ```
 
 If a file literally named `file.py:42` exists, it takes precedence.
@@ -134,24 +134,24 @@ lines := [{line: 5}, {start: 10, stop: 20}, {lines: [30, 40]}]
 
 ```sql
 SELECT line_number, content
-FROM read_text_lines('src/module.py:142 +/-5');
+FROM read_lines('src/module.py:142 +/-5');
 ```
 
 ### Extract log section
 
 ```sql
 SELECT line_number, content
-FROM read_text_lines('app.log', lines := '1000-1100');
+FROM read_lines('app.log', lines := '1000-1100');
 ```
 
 ### Head and tail
 
 ```sql
 -- First 20 lines
-SELECT * FROM read_text_lines('data.csv', lines := '-20');
+SELECT * FROM read_lines('data.csv', lines := '-20');
 
 -- Last section (from line 500 onward)
-SELECT * FROM read_text_lines('data.csv', lines := '500-');
+SELECT * FROM read_lines('data.csv', lines := '500-');
 ```
 
 ### Find errors with context
@@ -159,11 +159,11 @@ SELECT * FROM read_text_lines('data.csv', lines := '500-');
 ```sql
 WITH error_lines AS (
     SELECT line_number
-    FROM read_text_lines('app.log')
+    FROM read_lines('app.log')
     WHERE content LIKE '%ERROR%'
 )
 SELECT l.line_number, l.content
-FROM read_text_lines('app.log',
+FROM read_lines('app.log',
     lines := (SELECT list(line_number) FROM error_lines),
     context := 2
 ) l;
@@ -173,7 +173,7 @@ FROM read_text_lines('app.log',
 
 ```sql
 SELECT file_path, line_number, content
-FROM read_text_lines('logs/*.log')
+FROM read_lines('logs/*.log')
 WHERE content LIKE '%Exception%';
 ```
 
@@ -182,7 +182,7 @@ WHERE content LIKE '%Exception%';
 ```sql
 SELECT t.id, l.line_number, l.content
 FROM my_table t,
-     read_text_lines_lateral(t.file_path) l;
+     read_lines_lateral(t.file_path) l;
 ```
 
 ## Design Notes
