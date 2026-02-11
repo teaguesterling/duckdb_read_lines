@@ -30,20 +30,17 @@ struct ReadTextLinesGlobalState : public GlobalTableFunctionState {
     }
 
     idx_t MaxThreads() const override {
-        return 1; // Single-threaded for now
+        return 1;
     }
 };
 
 static unique_ptr<FunctionData> ReadTextLinesBind(ClientContext &context, TableFunctionBindInput &input,
                                                    vector<LogicalType> &return_types, vector<string> &names) {
-    // Parse file path/glob pattern
     auto &fs = FileSystem::GetFileSystem(context);
     auto glob_pattern = input.inputs[0].GetValue<string>();
 
-    // Expand glob pattern
     auto files = fs.GlobFiles(glob_pattern, context, FileGlobOptions::ALLOW_EMPTY);
 
-    // Parse named parameters
     LineSelection line_selection = LineSelection::All();
     int64_t before_context = 0;
     int64_t after_context = 0;
@@ -67,22 +64,20 @@ static unique_ptr<FunctionData> ReadTextLinesBind(ClientContext &context, TableF
         }
     }
 
-    // Apply context to line selection
     if (before_context > 0 || after_context > 0) {
         line_selection.AddContext(before_context, after_context);
     }
 
-    // Define output columns
-    return_types.push_back(LogicalType::BIGINT);   // line_number
+    return_types.push_back(LogicalType::BIGINT);
     names.push_back("line_number");
 
-    return_types.push_back(LogicalType::VARCHAR);  // content
+    return_types.push_back(LogicalType::VARCHAR);
     names.push_back("content");
 
-    return_types.push_back(LogicalType::BIGINT);   // byte_offset
+    return_types.push_back(LogicalType::BIGINT);
     names.push_back("byte_offset");
 
-    return_types.push_back(LogicalType::VARCHAR);  // file_path
+    return_types.push_back(LogicalType::VARCHAR);
     names.push_back("file_path");
 
     return make_uniq<ReadTextLinesBindData>(std::move(files), std::move(line_selection), ignore_errors);
@@ -110,7 +105,6 @@ static bool OpenNextFile(ReadTextLinesGlobalState &state, const ReadTextLinesBin
             if (!bind_data.ignore_errors) {
                 throw;
             }
-            // Skip this file and try next
             continue;
         }
     }
@@ -124,14 +118,12 @@ static void ReadTextLinesFunction(ClientContext &context, TableFunctionInput &da
     idx_t output_row = 0;
 
     while (output_row < STANDARD_VECTOR_SIZE) {
-        // Open next file if needed
         if (state.file_finished) {
             if (!OpenNextFile(state, bind_data)) {
-                break; // No more files
+                break;
             }
         }
 
-        // Read lines from current file
         while (output_row < STANDARD_VECTOR_SIZE && !state.file_finished) {
             string line;
             auto line_start_offset = state.current_byte_offset;
@@ -143,10 +135,7 @@ static void ReadTextLinesFunction(ClientContext &context, TableFunctionInput &da
                 break;
             }
 
-            // Check for EOF - ReadLine returns empty string at EOF
-            // but we also need to handle empty lines in the file
             if (line.empty()) {
-                // Check if we're at EOF by comparing position
                 auto current_pos = state.current_file->SeekPosition();
                 auto file_size = state.current_file->GetFileSize();
                 if (current_pos >= file_size) {
@@ -158,9 +147,7 @@ static void ReadTextLinesFunction(ClientContext &context, TableFunctionInput &da
             state.current_line_number++;
             state.current_byte_offset = state.current_file->SeekPosition();
 
-            // Check if we should include this line
             if (!bind_data.line_selection.ShouldIncludeLine(state.current_line_number)) {
-                // Check if we've passed all ranges
                 if (bind_data.line_selection.PastAllRanges(state.current_line_number)) {
                     state.file_finished = true;
                     break;
@@ -168,7 +155,6 @@ static void ReadTextLinesFunction(ClientContext &context, TableFunctionInput &da
                 continue;
             }
 
-            // Output this line
             output.data[0].SetValue(output_row, Value::BIGINT(state.current_line_number));
             output.data[1].SetValue(output_row, Value(line));
             output.data[2].SetValue(output_row, Value::BIGINT(line_start_offset));
@@ -185,8 +171,222 @@ TableFunction ReadTextLinesFunction() {
     TableFunction func("read_text_lines", {LogicalType::VARCHAR}, ReadTextLinesFunction, ReadTextLinesBind,
                        ReadTextLinesInit);
 
-    // Named parameters
-    func.named_parameters["lines"] = LogicalType::ANY;  // Can be int, string, or list
+    func.named_parameters["lines"] = LogicalType::ANY;
+    func.named_parameters["before"] = LogicalType::BIGINT;
+    func.named_parameters["after"] = LogicalType::BIGINT;
+    func.named_parameters["context"] = LogicalType::BIGINT;
+    func.named_parameters["ignore_errors"] = LogicalType::BOOLEAN;
+
+    return func;
+}
+
+// =============================================================================
+// Lateral join version: read_text_lines_lateral
+// =============================================================================
+
+struct ReadTextLinesLateralBindData : public TableFunctionData {
+    LineSelection line_selection;
+    bool ignore_errors;
+
+    ReadTextLinesLateralBindData(LineSelection selection, bool ignore_errors)
+        : line_selection(std::move(selection)), ignore_errors(ignore_errors) {
+    }
+};
+
+struct ReadTextLinesLateralState : public LocalTableFunctionState {
+    FileSystem *fs;
+    unique_ptr<FileHandle> current_file;
+    string current_file_path;
+    int64_t current_line_number;
+    int64_t current_byte_offset;
+    bool file_open;
+    idx_t current_row;
+
+    ReadTextLinesLateralState()
+        : fs(nullptr), current_line_number(0), current_byte_offset(0),
+          file_open(false), current_row(0) {
+    }
+};
+
+static unique_ptr<FunctionData> ReadTextLinesLateralBind(ClientContext &context, TableFunctionBindInput &input,
+                                                          vector<LogicalType> &return_types, vector<string> &names) {
+    LineSelection line_selection = LineSelection::All();
+    int64_t before_context = 0;
+    int64_t after_context = 0;
+    bool ignore_errors = false;
+
+    for (auto &param : input.named_parameters) {
+        auto &name = param.first;
+        auto &value = param.second;
+
+        if (name == "lines") {
+            line_selection = LineSelection::Parse(value);
+        } else if (name == "before") {
+            before_context = value.GetValue<int64_t>();
+        } else if (name == "after") {
+            after_context = value.GetValue<int64_t>();
+        } else if (name == "context") {
+            before_context = value.GetValue<int64_t>();
+            after_context = before_context;
+        } else if (name == "ignore_errors") {
+            ignore_errors = value.GetValue<bool>();
+        }
+    }
+
+    if (before_context > 0 || after_context > 0) {
+        line_selection.AddContext(before_context, after_context);
+    }
+
+    return_types.push_back(LogicalType::BIGINT);
+    names.push_back("line_number");
+
+    return_types.push_back(LogicalType::VARCHAR);
+    names.push_back("content");
+
+    return_types.push_back(LogicalType::BIGINT);
+    names.push_back("byte_offset");
+
+    return_types.push_back(LogicalType::VARCHAR);
+    names.push_back("file_path");
+
+    return make_uniq<ReadTextLinesLateralBindData>(std::move(line_selection), ignore_errors);
+}
+
+static unique_ptr<LocalTableFunctionState> ReadTextLinesLateralLocalInit(ExecutionContext &context,
+                                                                          TableFunctionInitInput &input,
+                                                                          GlobalTableFunctionState *global_state) {
+    auto result = make_uniq<ReadTextLinesLateralState>();
+    result->fs = &FileSystem::GetFileSystem(context.client);
+    return std::move(result);
+}
+
+static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, TableFunctionInput &data_p,
+                                                     DataChunk &input, DataChunk &output) {
+    auto &bind_data = data_p.bind_data->Cast<ReadTextLinesLateralBindData>();
+    auto &state = data_p.local_state->Cast<ReadTextLinesLateralState>();
+
+    if (input.size() == 0) {
+        output.SetCardinality(0);
+        return OperatorResultType::NEED_MORE_INPUT;
+    }
+
+    idx_t output_row = 0;
+
+    while (output_row < STANDARD_VECTOR_SIZE) {
+        // Need to open a new file?
+        if (!state.file_open) {
+            if (state.current_row >= input.size()) {
+                // Done with all input rows
+                output.SetCardinality(output_row);
+                state.current_row = 0;
+                return OperatorResultType::NEED_MORE_INPUT;
+            }
+
+            // Get file path from input
+            auto path_value = input.GetValue(0, state.current_row);
+            if (path_value.IsNull()) {
+                state.current_row++;
+                continue;
+            }
+
+            auto file_path = path_value.GetValue<string>();
+
+            // Try to open the file
+            try {
+                state.current_file = state.fs->OpenFile(file_path, FileFlags::FILE_FLAGS_READ);
+                state.current_file_path = file_path;
+                state.current_line_number = 0;
+                state.current_byte_offset = 0;
+                state.file_open = true;
+            } catch (std::exception &e) {
+                if (!bind_data.ignore_errors) {
+                    throw;
+                }
+                state.current_row++;
+                continue;
+            }
+        }
+
+        // Read lines from current file
+        while (output_row < STANDARD_VECTOR_SIZE && state.file_open) {
+            string line;
+            auto line_start_offset = state.current_byte_offset;
+
+            try {
+                line = state.current_file->ReadLine();
+            } catch (...) {
+                state.file_open = false;
+                state.current_row++;
+                break;
+            }
+
+            // Check for EOF
+            if (line.empty()) {
+                auto current_pos = state.current_file->SeekPosition();
+                auto file_size = state.current_file->GetFileSize();
+                if (current_pos >= file_size) {
+                    state.file_open = false;
+                    state.current_row++;
+                    break;
+                }
+            }
+
+            state.current_line_number++;
+            state.current_byte_offset = state.current_file->SeekPosition();
+
+            // Check line selection
+            if (!bind_data.line_selection.ShouldIncludeLine(state.current_line_number)) {
+                if (bind_data.line_selection.PastAllRanges(state.current_line_number)) {
+                    state.file_open = false;
+                    state.current_row++;
+                    break;
+                }
+                continue;
+            }
+
+            // Output the line
+            output.data[0].SetValue(output_row, Value::BIGINT(state.current_line_number));
+            output.data[1].SetValue(output_row, Value(line));
+            output.data[2].SetValue(output_row, Value::BIGINT(line_start_offset));
+            output.data[3].SetValue(output_row, Value(state.current_file_path));
+
+            output_row++;
+        }
+
+        // If file closed and more rows, continue to next file
+        if (!state.file_open && state.current_row < input.size()) {
+            continue;
+        }
+
+        // Exit if we have output or no more work
+        if (output_row > 0 || state.current_row >= input.size()) {
+            break;
+        }
+    }
+
+    output.SetCardinality(output_row);
+
+    // More output from current file?
+    if (state.file_open) {
+        return OperatorResultType::HAVE_MORE_OUTPUT;
+    }
+
+    // More input rows to process?
+    if (state.current_row < input.size()) {
+        return OperatorResultType::HAVE_MORE_OUTPUT;
+    }
+
+    state.current_row = 0;
+    return OperatorResultType::NEED_MORE_INPUT;
+}
+
+TableFunction ReadTextLinesLateralFunction() {
+    TableFunction func("read_text_lines_lateral", {LogicalType::VARCHAR}, nullptr, ReadTextLinesLateralBind,
+                       nullptr, ReadTextLinesLateralLocalInit);
+
+    func.in_out_function = ReadTextLinesLateralInOut;
+
+    func.named_parameters["lines"] = LogicalType::ANY;
     func.named_parameters["before"] = LogicalType::BIGINT;
     func.named_parameters["after"] = LogicalType::BIGINT;
     func.named_parameters["context"] = LogicalType::BIGINT;

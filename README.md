@@ -22,6 +22,24 @@ SELECT * FROM read_text_lines('error.log', lines := 42, context := 3);
 SELECT * FROM read_text_lines('logs/*.log', lines := '1-10');
 ```
 
+### `read_text_lines_lateral(file_path)`
+
+Lateral join variant for reading lines from file paths stored in a table column.
+
+```sql
+-- Read lines from files listed in a table
+SELECT f.name, l.line_number, l.content
+FROM files f,
+     read_text_lines_lateral(f.path) AS l;
+
+-- Read from multiple file paths using VALUES
+SELECT v.path, l.line_number, l.content
+FROM (VALUES ('a.txt'), ('b.txt')) AS v(path),
+     read_text_lines_lateral(v.path) AS l;
+```
+
+**Note:** Named parameters (lines, context, etc.) are not supported in the lateral version due to DuckDB limitations. Use the regular `read_text_lines` function for line selection features.
+
 ### `parse_text_lines(text, ...)`
 
 Parse lines from a string.

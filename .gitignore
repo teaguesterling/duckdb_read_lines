@@ -7,8 +7,6 @@ testext
 test/python/__pycache__/
 .Rhistory
 
-# blq
-.lq/*
-!.lq/hooks/
-!.lq/config.toml
-!.lq/commands.toml
+# Local tool config
+.lq/
+.mcp.json
