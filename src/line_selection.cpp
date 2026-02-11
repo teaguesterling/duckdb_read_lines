@@ -6,6 +6,10 @@
 
 namespace duckdb {
 
+// Forward declarations
+static LineRange ParseRangeStruct(const Value &value);
+static bool IsRangeStruct(const LogicalType &type);
+
 LineSelection LineSelection::All() {
 	return LineSelection();
 }
@@ -34,13 +38,18 @@ LineSelection LineSelection::Parse(const Value &value) {
 	} else if (type.id() == LogicalTypeId::VARCHAR) {
 		// Range string: lines := '100-200'
 		ranges.push_back(ParseRangeString(value.GetValue<string>()));
+	} else if (type.id() == LogicalTypeId::STRUCT && IsRangeStruct(type)) {
+		// Struct range: lines := {start: 10, stop: 100}
+		ranges.push_back(ParseRangeStruct(value));
 	} else if (type.id() == LogicalTypeId::LIST) {
-		// List of numbers/ranges: lines := [1, 5, '10-20']
+		// List of numbers/ranges/structs: lines := [1, 5, '10-20', {start: 30, stop: 40}]
 		auto &list_values = ListValue::GetChildren(value);
 		for (auto &item : list_values) {
 			auto &item_type = item.type();
 			if (item_type.id() == LogicalTypeId::VARCHAR) {
 				ranges.push_back(ParseRangeString(item.GetValue<string>()));
+			} else if (item_type.id() == LogicalTypeId::STRUCT && IsRangeStruct(item_type)) {
+				ranges.push_back(ParseRangeStruct(item));
 			} else {
 				auto line = item.GetValue<int64_t>();
 				if (line < 1) {
@@ -50,13 +59,78 @@ LineSelection LineSelection::Parse(const Value &value) {
 			}
 		}
 	} else {
-		throw InvalidInputException("Invalid type for 'lines' parameter: expected integer, string, or list");
+		throw InvalidInputException(
+		    "Invalid type for 'lines' parameter: expected integer, string, struct with start/stop, or list");
 	}
 
 	if (ranges.empty()) {
 		return All();
 	}
 	return LineSelection(std::move(ranges));
+}
+
+// Check if a type is a struct with 'start' and 'stop' fields
+static bool IsRangeStruct(const LogicalType &type) {
+	if (type.id() != LogicalTypeId::STRUCT) {
+		return false;
+	}
+	auto &children = StructType::GetChildTypes(type);
+	bool has_start = false;
+	bool has_stop = false;
+	for (auto &child : children) {
+		if (child.first == "start") {
+			has_start = true;
+		} else if (child.first == "stop") {
+			has_stop = true;
+		}
+	}
+	return has_start && has_stop;
+}
+
+// Parse a struct value with 'start', 'stop', and optional 'inclusive' fields into a LineRange
+static LineRange ParseRangeStruct(const Value &value) {
+	auto &children = StructValue::GetChildren(value);
+	auto &struct_type = value.type();
+	auto &child_types = StructType::GetChildTypes(struct_type);
+
+	int64_t start = -1;
+	int64_t stop = -1;
+	bool inclusive = true; // Default: inclusive (like SQL BETWEEN)
+
+	for (idx_t i = 0; i < child_types.size(); i++) {
+		auto &field_name = child_types[i].first;
+		auto &field_value = children[i];
+
+		if (field_name == "start") {
+			if (field_value.IsNull()) {
+				throw InvalidInputException("Range struct 'start' field cannot be NULL");
+			}
+			start = field_value.GetValue<int64_t>();
+		} else if (field_name == "stop") {
+			if (field_value.IsNull()) {
+				throw InvalidInputException("Range struct 'stop' field cannot be NULL");
+			}
+			stop = field_value.GetValue<int64_t>();
+		} else if (field_name == "inclusive") {
+			if (!field_value.IsNull()) {
+				inclusive = field_value.GetValue<bool>();
+			}
+		}
+	}
+
+	if (start < 1) {
+		throw InvalidInputException("Line range start must be >= 1, got %lld", start);
+	}
+
+	// Calculate effective end based on inclusive flag
+	int64_t effective_end = inclusive ? stop : stop - 1;
+
+	if (effective_end < start) {
+		throw InvalidInputException("Line range stop must be %s start, got %lld-%lld", inclusive ? ">=" : ">", start,
+		                            stop);
+	}
+
+	return LineRange(start, effective_end);
 }
 
 LineRange LineSelection::ParseRangeString(const string &str) {

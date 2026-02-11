@@ -76,11 +76,20 @@ lines := 42
 -- Range string (inclusive)
 lines := '100-200'
 
+-- Struct with start/stop (inclusive by default, like SQL BETWEEN)
+lines := {start: 100, stop: 200}
+
+-- Struct with exclusive stop (like Python range)
+lines := {start: 100, stop: 200, inclusive: false}
+
 -- List of line numbers
 lines := [1, 5, 10]
 
 -- List of ranges (use strings for ranges)
 lines := ['1-10', '50-60', '100']
+
+-- List of struct ranges
+lines := [{start: 1, stop: 10}, {start: 50, stop: 60}]
 ```
 
 ### Context Parameters

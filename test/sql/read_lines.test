@@ -103,6 +103,46 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 5	e	8
 8	h	14
 
+# Test parse_text_lines with struct range (inclusive by default)
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := {start: 2, stop: 4});
+----
+2	line2	6
+3	line3	12
+4	line4	18
+
+# Test parse_text_lines with list of struct ranges
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne\nf\ng\nh\ni\nj', lines := [{start: 1, stop: 2}, {start: 5, stop: 6}, {start: 9, stop: 10}]);
+----
+1	a	0
+2	b	2
+5	e	8
+6	f	10
+9	i	16
+10	j	18
+
+# Test struct range with single line (start equals stop)
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3', lines := {start: 2, stop: 2});
+----
+2	line2	6
+
+# Test struct range with inclusive: false (exclusive stop, like Python range)
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := {start: 2, stop: 4, inclusive: false});
+----
+2	line2	6
+3	line3	12
+
+# Test struct range with inclusive: true (explicit, same as default)
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := {start: 2, stop: 4, inclusive: true});
+----
+2	line2	6
+3	line3	12
+4	line4	18
+
 # =============================================================================
 # read_text_lines file-based tests
 # =============================================================================
