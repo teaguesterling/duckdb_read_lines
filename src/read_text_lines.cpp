@@ -38,11 +38,30 @@ struct ReadTextLinesGlobalState : public GlobalTableFunctionState {
 static unique_ptr<FunctionData> ReadTextLinesBind(ClientContext &context, TableFunctionBindInput &input,
                                                   vector<LogicalType> &return_types, vector<string> &names) {
 	auto &fs = FileSystem::GetFileSystem(context);
-	auto glob_pattern = input.inputs[0].GetValue<string>();
+	auto input_path = input.inputs[0].GetValue<string>();
 
-	auto files = fs.GlobFiles(glob_pattern, context, FileGlobOptions::ALLOW_EMPTY);
+	// Try the original path first - if it exists or matches files, use it as-is
+	// This handles cases where filenames contain colons (e.g., "file:2.txt")
+	auto files = fs.GlobFiles(input_path, context, FileGlobOptions::ALLOW_EMPTY);
+
+	string glob_pattern = input_path;
+	LineSelection path_line_selection = LineSelection::All();
+
+	if (files.empty()) {
+		// No files found with original path - try parsing for embedded line spec
+		auto [parsed_path, parsed_selection] = LineSelection::ParsePathWithLineSpec(input_path);
+		if (parsed_path != input_path) {
+			// Path was parsed differently, try globbing with the extracted path
+			files = fs.GlobFiles(parsed_path, context, FileGlobOptions::ALLOW_EMPTY);
+			if (!files.empty()) {
+				glob_pattern = parsed_path;
+				path_line_selection = std::move(parsed_selection);
+			}
+		}
+	}
 
 	LineSelection line_selection = LineSelection::All();
+	bool has_explicit_lines = false;
 	int64_t before_context = 0;
 	int64_t after_context = 0;
 	bool ignore_errors = false;
@@ -53,6 +72,7 @@ static unique_ptr<FunctionData> ReadTextLinesBind(ClientContext &context, TableF
 
 		if (name == "lines") {
 			line_selection = LineSelection::Parse(value);
+			has_explicit_lines = true;
 		} else if (name == "before") {
 			before_context = value.GetValue<int64_t>();
 		} else if (name == "after") {
@@ -63,6 +83,11 @@ static unique_ptr<FunctionData> ReadTextLinesBind(ClientContext &context, TableF
 		} else if (name == "ignore_errors") {
 			ignore_errors = value.GetValue<bool>();
 		}
+	}
+
+	// If no explicit lines param, use path-embedded selection
+	if (!has_explicit_lines && !path_line_selection.IsAll()) {
+		line_selection = std::move(path_line_selection);
 	}
 
 	if (before_context > 0 || after_context > 0) {

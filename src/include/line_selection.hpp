@@ -57,8 +57,14 @@ private:
 	// Merge overlapping ranges and sort them
 	static vector<LineRange> MergeRanges(vector<LineRange> ranges);
 
-	// Parse a single range string like "100-200"
+	// Parse a single range string like "100-200" or "13 -2 +3" (with per-entry context)
 	static LineRange ParseRangeString(const string &str);
+
+public:
+	// Parse a path that may contain an embedded line spec (e.g., "file.py:13-14")
+	// Returns the actual file path and a LineSelection
+	// If no line spec is found, returns the original path and LineSelection::All()
+	static std::pair<string, LineSelection> ParsePathWithLineSpec(const string &path);
 };
 
 } // namespace duckdb

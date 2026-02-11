@@ -2,141 +2,161 @@
 
 A DuckDB extension for reading line-based text files with line numbers and efficient subset extraction.
 
+## Quick Start
+
+```sql
+-- Read all lines
+SELECT * FROM read_text_lines('app.log');
+
+-- Read specific lines (error message style)
+SELECT * FROM read_text_lines('src/file.py:42 +/-5');
+
+-- Read a range with context
+SELECT * FROM read_text_lines('app.log', lines := '100-200', context := 3);
+```
+
 ## Functions
 
-### `read_text_lines(file_path, ...)`
+| Function | Description |
+|----------|-------------|
+| `read_text_lines(path, ...)` | Read lines from file(s), supports glob patterns |
+| `read_text_lines_lateral(path)` | Lateral join variant for per-row file paths |
+| `parse_text_lines(text, ...)` | Parse lines from a string value |
 
-Read lines from file(s) with glob pattern support.
-
-```sql
--- Read all lines from a file
-SELECT * FROM read_text_lines('server.log');
-
--- Read specific lines
-SELECT * FROM read_text_lines('server.log', lines := '100-200');
-
--- Read lines with context
-SELECT * FROM read_text_lines('error.log', lines := 42, context := 3);
-
--- Glob pattern
-SELECT * FROM read_text_lines('logs/*.log', lines := '1-10');
-```
-
-### `read_text_lines_lateral(file_path)`
-
-Lateral join variant for reading lines from file paths stored in a table column.
-
-```sql
--- Read lines from files listed in a table
-SELECT f.name, l.line_number, l.content
-FROM files f,
-     read_text_lines_lateral(f.path) AS l;
-
--- Read from multiple file paths using VALUES
-SELECT v.path, l.line_number, l.content
-FROM (VALUES ('a.txt'), ('b.txt')) AS v(path),
-     read_text_lines_lateral(v.path) AS l;
-```
-
-**Note:** Named parameters (lines, context, etc.) are not supported in the lateral version due to DuckDB limitations. Use the regular `read_text_lines` function for line selection features.
-
-### `parse_text_lines(text, ...)`
-
-Parse lines from a string.
-
-```sql
--- Parse inline text
-SELECT * FROM parse_text_lines('line1
-line2
-line3');
-
--- With line selection
-SELECT * FROM parse_text_lines(my_column, lines := [1, 5, 10]);
-```
-
-## Output Schema
+### Output Columns
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `line_number` | BIGINT | 1-indexed line number |
-| `content` | VARCHAR | Line content (preserves original line endings) |
-| `byte_offset` | BIGINT | Byte position of line start in file/string |
-| `file_path` | VARCHAR | Source file path (read_text_lines only) |
+| `content` | VARCHAR | Line content (preserves line endings) |
+| `byte_offset` | BIGINT | Byte position of line start |
+| `file_path` | VARCHAR | Source file path (file functions only) |
 
-## Parameters
+## Line Selection
 
-### Line Selection (`lines`)
+Lines can be selected using the `lines` parameter or embedded in the file path.
 
-Flexible line selection supporting multiple formats:
+### Line Spec Syntax
+
+A line spec is a mini-language for selecting lines:
+
+| Syntax | Meaning | Example |
+|--------|---------|---------|
+| `N` | Single line | `42` |
+| `N-M` | Range (inclusive) | `10-20` |
+| `N...M` | Range (alternative) | `10...20` |
+| `-N` or `...N` | First N lines (head) | `-100` |
+| `N-` or `N...` | From line N to end (tail) | `100-` |
+| `spec +/-C` | With C lines context | `42 +/-3` |
+| `spec -B +A` | With B before, A after | `42 -2 +5` |
+
+### Path-Embedded Selection
+
+Line specs can be embedded in the file path after a colon:
 
 ```sql
--- Single line number
+read_text_lines('file.py:42')           -- line 42
+read_text_lines('file.py:10-20')        -- lines 10-20
+read_text_lines('file.py:42 +/-3')      -- line 42 with 3 lines context
+read_text_lines('file.py:-50')          -- first 50 lines
+read_text_lines('file.py:100-')         -- from line 100 to end
+```
+
+If a file literally named `file.py:42` exists, it takes precedence.
+
+### Lines Parameter
+
+The `lines` parameter accepts integers, strings, or structs:
+
+```sql
+-- Integer: single line or list
 lines := 42
+lines := [1, 5, 10, 20]
 
--- Range string (inclusive)
+-- String: line spec syntax
 lines := '100-200'
+lines := '42 +/-3'
+lines := ['-10', '100-']        -- first 10 and from 100 to end
+```
 
--- Struct with start/stop (inclusive by default, like SQL BETWEEN)
+### Struct Format
+
+Structs provide named fields for complex selections:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `start` | INT | Range start (with `stop`) |
+| `stop` | INT | Range end (with `start`) |
+| `line` | INT | Single line number |
+| `lines` | INT[] | Multiple line numbers |
+| `before` | INT | Lines of context before |
+| `after` | INT | Lines of context after |
+| `context` | INT | Symmetric context (before and after) |
+| `inclusive` | BOOL | Include stop line (default: true) |
+
+```sql
+-- Range
 lines := {start: 100, stop: 200}
 
--- Struct with exclusive stop (like Python range)
-lines := {start: 100, stop: 200, inclusive: false}
+-- Single line with context
+lines := {line: 42, context: 3}
 
--- List of line numbers
-lines := [1, 5, 10]
+-- Multiple lines with context
+lines := {lines: [10, 20, 30], before: 2, after: 5}
 
--- List of ranges (use strings for ranges)
-lines := ['1-10', '50-60', '100']
+-- Head/tail
+lines := {stop: 100}              -- first 100 lines
+lines := {start: 100}             -- from line 100 to end
 
--- List of struct ranges
-lines := [{start: 1, stop: 10}, {start: 50, stop: 60}]
+-- Exclusive stop (like Python range)
+lines := {start: 1, stop: 11, inclusive: false}   -- lines 1-10
 ```
 
-### Context Parameters
+DuckDB unifies struct types, so you can mix forms in a list:
 
 ```sql
--- Lines before each match
-before := 3
-
--- Lines after each match
-after := 3
-
--- Shorthand for before and after
-context := 3
+lines := [{line: 5}, {start: 10, stop: 20}, {lines: [30, 40]}]
 ```
 
-### File Parameters (read_text_lines only)
+## Global Parameters
 
-```sql
--- Skip files that can't be read
-ignore_errors := true
-```
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `lines` | ANY | Line selection (see above) |
+| `before` | BIGINT | Context lines before each selection |
+| `after` | BIGINT | Context lines after each selection |
+| `context` | BIGINT | Symmetric context (sets both before and after) |
+| `ignore_errors` | BOOL | Skip unreadable files in glob patterns |
 
-## Building
+## Examples
 
-```bash
-make
-```
-
-## Testing
-
-```bash
-make test
-```
-
-## Example Use Cases
-
-### Extract specific lines from a log file
+### View error location from stack trace
 
 ```sql
 SELECT line_number, content
-FROM read_text_lines('app.log', lines := '100-150');
+FROM read_text_lines('src/module.py:142 +/-5');
 ```
 
-### Get error lines with context
+### Extract log section
 
 ```sql
--- First find error line numbers, then extract with context
+SELECT line_number, content
+FROM read_text_lines('app.log', lines := '1000-1100');
+```
+
+### Head and tail
+
+```sql
+-- First 20 lines
+SELECT * FROM read_text_lines('data.csv', lines := '-20');
+
+-- Last section (from line 500 onward)
+SELECT * FROM read_text_lines('data.csv', lines := '500-');
+```
+
+### Find errors with context
+
+```sql
 WITH error_lines AS (
     SELECT line_number
     FROM read_text_lines('app.log')
@@ -149,7 +169,7 @@ FROM read_text_lines('app.log',
 ) l;
 ```
 
-### Process multiple log files
+### Search across files
 
 ```sql
 SELECT file_path, line_number, content
@@ -157,20 +177,21 @@ FROM read_text_lines('logs/*.log')
 WHERE content LIKE '%Exception%';
 ```
 
-### Parse multi-line string column
+### Lateral join for per-row files
 
 ```sql
-SELECT id, lines.line_number, lines.content
-FROM my_table,
-     parse_text_lines(my_table.text_column) AS lines;
+SELECT t.id, l.line_number, l.content
+FROM my_table t,
+     read_text_lines_lateral(t.file_path) l;
 ```
 
-## Design Decisions
+## Design Notes
 
 - **Line numbering**: 1-indexed (matches editors, grep, error messages)
-- **Range syntax**: Inclusive on both ends (`'100-200'` = lines 100 through 200)
+- **Range bounds**: Inclusive on both ends
 - **Line endings**: Preserved as-is (`\n`, `\r\n`, `\r`)
-- **Empty lines**: Included (no filtering)
+- **Context clamping**: Context before line 1 or after EOF is clamped
+- **Short-circuit**: Scanning stops after passing all selected ranges
 - **Encoding**: UTF-8
 
 ## License

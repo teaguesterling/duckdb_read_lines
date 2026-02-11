@@ -144,6 +144,330 @@ SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_t
 4	line4	18
 
 # =============================================================================
+# Per-entry context tests
+# =============================================================================
+
+# Test string range with symmetric context (+/-N)
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := '3 +/-1');
+----
+2	line2	6
+3	line3	12
+4	line4	18
+
+# Test string range with before context only (-B)
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := '3 -2');
+----
+1	line1	0
+2	line2	6
+3	line3	12
+
+# Test string range with after context only (+A)
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := '3 +2');
+----
+3	line3	12
+4	line4	18
+5	line5	24
+
+# Test string range with asymmetric context (-B+A)
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := '3 -1+2');
+----
+2	line2	6
+3	line3	12
+4	line4	18
+5	line5	24
+
+# Test string range with asymmetric context with space (-B +A)
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := '3 -1 +2');
+----
+2	line2	6
+3	line3	12
+4	line4	18
+5	line5	24
+
+# Test range string with per-entry context
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne\nf\ng\nh\ni\nj', lines := '4-6 +/-1');
+----
+3	c	4
+4	d	6
+5	e	8
+6	f	10
+7	g	12
+
+# Test struct range with before/after context
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := {start: 3, stop: 3, before: 1, after: 2});
+----
+2	line2	6
+3	line3	12
+4	line4	18
+5	line5	24
+
+# Test struct range with context shorthand
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := {start: 3, stop: 3, context: 1});
+----
+2	line2	6
+3	line3	12
+4	line4	18
+
+# Test list with mixed per-entry context
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne\nf\ng\nh\ni\nj', lines := ['2 -1', '8 +1']);
+----
+1	a	0
+2	b	2
+8	h	14
+9	i	16
+
+# =============================================================================
+# Struct with 'line' and 'lines' fields
+# =============================================================================
+
+# Test struct with single 'line' field
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := {line: 3});
+----
+3	line3	12
+
+# Test struct with 'line' and context
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'line1\nline2\nline3\nline4\nline5', lines := {line: 3, context: 1});
+----
+2	line2	6
+3	line3	12
+4	line4	18
+
+# Test struct with 'lines' array
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne\nf\ng\nh\ni\nj', lines := {lines: [2, 5, 8]});
+----
+2	b	2
+5	e	8
+8	h	14
+
+# Test struct with 'lines' array and context
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne\nf\ng\nh\ni\nj', lines := {lines: [3, 7], context: 1});
+----
+2	b	2
+3	c	4
+4	d	6
+6	f	10
+7	g	12
+8	h	14
+
+# Test struct with 'lines' and before/after
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne\nf\ng\nh\ni\nj', lines := {lines: [5], before: 1, after: 2});
+----
+4	d	6
+5	e	8
+6	f	10
+7	g	12
+
+# Test list of structs with mixed forms (DuckDB unifies struct types)
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne\nf\ng\nh\ni\nj', lines := [{line: 2}, {start: 5, stop: 6}, {lines: [9, 10]}]);
+----
+2	b	2
+5	e	8
+6	f	10
+9	i	16
+10	j	18
+
+# =============================================================================
+# Half-bounded ranges (head/tail)
+# =============================================================================
+
+# Test head form with dash: -3 (first 3 lines)
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne', lines := '-3');
+----
+1	a	0
+2	b	2
+3	c	4
+
+# Test head form with ellipsis: ...3
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne', lines := '...3');
+----
+1	a	0
+2	b	2
+3	c	4
+
+# Test tail form with dash: 3- (from line 3 to end)
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne', lines := '3-');
+----
+3	c	4
+4	d	6
+5	e	8
+
+# Test tail form with ellipsis: 3...
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne', lines := '3...');
+----
+3	c	4
+4	d	6
+5	e	8
+
+# Test struct head form: {stop: 3}
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne', lines := {stop: 3});
+----
+1	a	0
+2	b	2
+3	c	4
+
+# Test struct tail form: {start: 3}
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne', lines := {start: 3});
+----
+3	c	4
+4	d	6
+5	e	8
+
+# Test half-bounded with context
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne', lines := '-2 +1');
+----
+1	a	0
+2	b	2
+3	c	4
+
+# Test ellipsis full range: 2...4
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne', lines := '2...4');
+----
+2	b	2
+3	c	4
+4	d	6
+
+# =============================================================================
+# Edge cases
+# =============================================================================
+
+# Test context that extends before line 1 (should clamp to 1)
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc', lines := '1 -5');
+----
+1	a	0
+
+# Test context that extends past end of file (should just include what exists)
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc', lines := '3 +10');
+----
+3	c	4
+
+# Test overlapping ranges get merged
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc\nd\ne', lines := ['2 +/-1', '3 +/-1']);
+----
+1	a	0
+2	b	2
+3	c	4
+4	d	6
+
+# Test line beyond file length returns nothing
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines(E'a\nb\nc', lines := 100);
+----
+
+# Test line selection on empty input
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_text_lines('', lines := 1);
+----
+
+# =============================================================================
+# Error cases
+# =============================================================================
+
+# Test invalid line number (0)
+statement error
+SELECT * FROM parse_text_lines(E'a\nb\nc', lines := 0);
+----
+Line number must be >= 1
+
+# Test invalid line number (negative)
+statement error
+SELECT * FROM parse_text_lines(E'a\nb\nc', lines := -1);
+----
+Line number must be >= 1
+
+# Test invalid range (end < start)
+statement error
+SELECT * FROM parse_text_lines(E'a\nb\nc', lines := '5-3');
+----
+Line range end must be >= start
+
+# =============================================================================
+# Path-embedded line specs
+# =============================================================================
+
+# Test path with single line: file:N
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_text_lines('test/data/simple.txt:3');
+----
+3	line three
+
+# Test path with range: file:N-M
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_text_lines('test/data/simple.txt:2-4');
+----
+2	line two
+3	line three
+4	line four
+
+# Test path with head form: file:-N
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_text_lines('test/data/simple.txt:-2');
+----
+1	line one
+2	line two
+
+# Test path with tail form: file:N-
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_text_lines('test/data/simple.txt:4-');
+----
+4	line four
+5	line five
+
+# Test path with context: file:N +/-C
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_text_lines('test/data/simple.txt:3 +/-1');
+----
+2	line two
+3	line three
+4	line four
+
+# Test path with ellipsis range: file:N...M
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_text_lines('test/data/simple.txt:2...4');
+----
+2	line two
+3	line three
+4	line four
+
+# Test explicit lines param overrides path-embedded (uses lines param, ignores :3)
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_text_lines('test/data/simple.txt:3', lines := 1);
+----
+1	line one
+
+# =============================================================================
 # read_text_lines file-based tests
 # =============================================================================
 
