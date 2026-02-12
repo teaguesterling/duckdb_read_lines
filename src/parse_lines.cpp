@@ -148,7 +148,7 @@ static void ParseTextLinesFunction(ClientContext &context, TableFunctionInput &d
 	output.SetCardinality(output_row);
 }
 
-TableFunction ParseTextLinesFunction() {
+TableFunction ParseLinesFunction() {
 	TableFunction func("parse_lines", {LogicalType::VARCHAR}, ParseTextLinesFunction, ParseTextLinesBind,
 	                   ParseTextLinesInit);
 

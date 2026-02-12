@@ -193,7 +193,7 @@ static void ReadTextLinesFunction(ClientContext &context, TableFunctionInput &da
 	output.SetCardinality(output_row);
 }
 
-TableFunction ReadTextLinesFunction() {
+TableFunction ReadLinesFunction() {
 	TableFunction func("read_lines", {LogicalType::VARCHAR}, ReadTextLinesFunction, ReadTextLinesBind,
 	                   ReadTextLinesInit);
 
@@ -405,7 +405,7 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 	return OperatorResultType::NEED_MORE_INPUT;
 }
 
-TableFunction ReadTextLinesLateralFunction() {
+TableFunction ReadLinesLateralFunction() {
 	TableFunction func("read_lines_lateral", {LogicalType::VARCHAR}, nullptr, ReadTextLinesLateralBind, nullptr,
 	                   ReadTextLinesLateralLocalInit);
 

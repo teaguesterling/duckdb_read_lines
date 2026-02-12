@@ -8,19 +8,19 @@
 namespace duckdb {
 
 // Forward declarations - defined in separate files
-TableFunction ReadTextLinesFunction();
-TableFunction ReadTextLinesLateralFunction();
-TableFunction ParseTextLinesFunction();
+TableFunction ReadLinesFunction();
+TableFunction ReadLinesLateralFunction();
+TableFunction ParseLinesFunction();
 
 void ReadLinesExtension::Load(ExtensionLoader &loader) {
 	// Register read_lines table function
-	loader.RegisterFunction(ReadTextLinesFunction());
+	loader.RegisterFunction(ReadLinesFunction());
 
 	// Register read_lines_lateral for lateral join support
-	loader.RegisterFunction(ReadTextLinesLateralFunction());
+	loader.RegisterFunction(ReadLinesLateralFunction());
 
 	// Register parse_lines table function
-	loader.RegisterFunction(ParseTextLinesFunction());
+	loader.RegisterFunction(ParseLinesFunction());
 }
 
 std::string ReadLinesExtension::Name() {
@@ -37,16 +37,10 @@ std::string ReadLinesExtension::Version() const {
 
 } // namespace duckdb
 
-extern "C" {
-
-DUCKDB_EXTENSION_API void read_lines_init(duckdb::DatabaseInstance &db) {
-	duckdb::DuckDB db_wrapper(db);
-	db_wrapper.LoadStaticExtension<duckdb::ReadLinesExtension>();
-}
-
-DUCKDB_EXTENSION_API const char *read_lines_version() {
-	return duckdb::DuckDB::LibraryVersion();
-}
+// Use the new DuckDB C++ extension entry point
+DUCKDB_CPP_EXTENSION_ENTRY(read_lines, loader) {
+	duckdb::ReadLinesExtension extension;
+	extension.Load(loader);
 }
 
 #ifndef DUCKDB_EXTENSION_MAIN
