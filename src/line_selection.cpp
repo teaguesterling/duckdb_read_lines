@@ -64,8 +64,7 @@ LineSelection LineSelection::Parse(const Value &value) {
 			}
 		}
 	} else {
-		throw InvalidInputException(
-		    "Invalid type for 'lines' parameter: expected integer, string, struct, or list");
+		throw InvalidInputException("Invalid type for 'lines' parameter: expected integer, string, struct, or list");
 	}
 
 	if (ranges.empty()) {
@@ -107,14 +106,14 @@ static vector<LineRange> ParseLineStruct(const Value &value) {
 	auto &child_types = StructType::GetChildTypes(struct_type);
 
 	// Field values (use optional-like semantics with sentinel values)
-	int64_t start = -1;      // -1 means not specified
-	int64_t stop = -1;       // -1 means not specified
-	int64_t line = -1;       // -1 means not specified
-	vector<int64_t> lines;   // empty means not specified
-	bool inclusive = true;   // Default: inclusive (like SQL BETWEEN)
+	int64_t start = -1;    // -1 means not specified
+	int64_t stop = -1;     // -1 means not specified
+	int64_t line = -1;     // -1 means not specified
+	vector<int64_t> lines; // empty means not specified
+	bool inclusive = true; // Default: inclusive (like SQL BETWEEN)
 	int64_t before = 0;
 	int64_t after = 0;
-	int64_t context = -1;    // -1 means not specified
+	int64_t context = -1; // -1 means not specified
 
 	for (idx_t i = 0; i < child_types.size(); i++) {
 		auto &field_name = child_types[i].first;
@@ -225,8 +224,7 @@ static vector<LineRange> ParseLineStruct(const Value &value) {
 			result.push_back(range);
 		}
 	} else {
-		throw InvalidInputException(
-		    "Line selection struct must have 'start'+'stop', 'line', or 'lines' field");
+		throw InvalidInputException("Line selection struct must have 'start'+'stop', 'line', or 'lines' field");
 	}
 
 	return result;
