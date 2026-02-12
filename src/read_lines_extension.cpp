@@ -37,11 +37,16 @@ std::string ReadLinesExtension::Version() const {
 
 } // namespace duckdb
 
-// Use the new DuckDB C++ extension entry point
+// Use the new DuckDB C++ extension entry point (for loadable extension)
+#ifdef DUCKDB_BUILD_LOADABLE_EXTENSION
+extern "C" {
+
 DUCKDB_CPP_EXTENSION_ENTRY(read_lines, loader) {
 	duckdb::ReadLinesExtension extension;
 	extension.Load(loader);
 }
+}
+#endif
 
 #ifndef DUCKDB_EXTENSION_MAIN
 #error DUCKDB_EXTENSION_MAIN not defined
