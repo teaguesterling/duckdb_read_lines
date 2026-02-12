@@ -4,11 +4,12 @@
 #include "duckdb.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/function/table_function.hpp"
+#include "duckdb/function/function_set.hpp"
 
 namespace duckdb {
 
 // Forward declarations - defined in separate files
-TableFunction ReadLinesFunction();
+TableFunctionSet ReadLinesFunction();
 TableFunction ReadLinesLateralFunction();
 TableFunction ParseLinesFunction();
 

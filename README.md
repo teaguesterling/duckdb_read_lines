@@ -8,10 +8,14 @@ A DuckDB extension for reading line-based text files with line numbers and effic
 -- Read all lines
 SELECT * FROM read_lines('app.log');
 
--- Read specific lines (error message style)
+-- Read specific lines (positional argument)
+SELECT * FROM read_lines('app.log', '100-200');
+SELECT * FROM read_lines('app.log', '42 +/-5');
+
+-- Read specific lines (path-embedded)
 SELECT * FROM read_lines('src/file.py:42 +/-5');
 
--- Read a range with context
+-- Read a range with named parameters
 SELECT * FROM read_lines('app.log', lines := '100-200', context := 3);
 ```
 
@@ -19,7 +23,8 @@ SELECT * FROM read_lines('app.log', lines := '100-200', context := 3);
 
 | Function | Description |
 |----------|-------------|
-| `read_lines(path, ...)` | Read lines from file(s), supports glob patterns |
+| `read_lines(path)` | Read all lines from file(s), supports glob patterns |
+| `read_lines(path, lines)` | Read selected lines (positional lines argument) |
 | `read_lines_lateral(path)` | Lateral join variant for per-row file paths |
 | `parse_lines(text, ...)` | Parse lines from a string value |
 

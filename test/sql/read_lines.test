@@ -498,6 +498,60 @@ FROM read_lines('test/data/simple.txt', lines := 3);
 ----
 3	line three
 
+# =============================================================================
+# Positional lines argument tests
+# =============================================================================
+
+# Test positional lines argument - range string
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt', '2-4');
+----
+2	line two
+3	line three
+4	line four
+
+# Test positional lines argument - single integer
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt', 3);
+----
+3	line three
+
+# Test positional lines argument - line with context
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt', '3 +/-1');
+----
+2	line two
+3	line three
+4	line four
+
+# Test positional lines argument - head syntax
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt', '-2');
+----
+1	line one
+2	line two
+
+# Test positional lines argument - tail syntax
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt', '4-');
+----
+4	line four
+5	line five
+
+# Test positional lines argument with additional context parameter
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt', 3, context := 1);
+----
+2	line two
+3	line three
+4	line four
+
 # Test file with no trailing newline
 query II
 SELECT line_number, rtrim(content, chr(10) || chr(13))
