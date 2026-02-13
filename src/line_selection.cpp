@@ -13,6 +13,25 @@ static bool ParseContextSuffix(const string &str, size_t line_spec_end, int64_t 
 static bool IsGlobalContextString(const string &str, int64_t &context);
 static void ApplyContextToRange(LineRange &range, int64_t before, int64_t after);
 
+// Parse a line number string that may have a + prefix (meaning from-end)
+// "+10" -> -10 (10th from end), "10" -> 10
+static int64_t ParseLineNumberString(const string &str) {
+	string trimmed = str;
+	StringUtil::Trim(trimmed);
+	if (trimmed.empty()) {
+		throw InvalidInputException("Empty line number");
+	}
+	if (trimmed[0] == '+') {
+		// From-end reference: +N becomes -N internally
+		int64_t n = std::stoll(trimmed.substr(1));
+		if (n < 1) {
+			throw InvalidInputException("Line offset from end must be >= 1, got %lld", n);
+		}
+		return -n;
+	}
+	return std::stoll(trimmed);
+}
+
 LineSelection LineSelection::All() {
 	return LineSelection();
 }
@@ -231,8 +250,16 @@ static vector<LineRange> ParseLineStruct(const Value &value) {
 }
 
 // Apply context (before/after) to a range
+// Note: For from-end references (negative values), we don't clamp to 1 yet;
+// that happens in ResolveFromEnd after conversion to positive line numbers
 static void ApplyContextToRange(LineRange &range, int64_t before, int64_t after) {
-	range.start = std::max(int64_t(1), range.start - before);
+	if (range.start > 0) {
+		// Positive (normal) line number - clamp to 1
+		range.start = std::max(int64_t(1), range.start - before);
+	} else {
+		// Negative (from-end) reference - just adjust, clamping happens after resolution
+		range.start = range.start - before;
+	}
 	range.end = range.end + after;
 }
 
@@ -374,6 +401,10 @@ LineRange LineSelection::ParseRangeString(const string &str) {
 						// Followed by digit: range (100-200)
 						dash_pos = i;
 						break;
+					} else if (i + 1 < trimmed.length() && trimmed[i + 1] == '+') {
+						// Followed by +: from-end range (10-+5 or +10-+5)
+						dash_pos = i;
+						break;
 					} else if (i + 1 >= trimmed.length() || trimmed[i + 1] == ' ') {
 						// End of string or space: tail form (100-)
 						dash_pos = i;
@@ -440,23 +471,23 @@ LineRange LineSelection::ParseRangeString(const string &str) {
 			// Head form: -100 or ...100
 			start = 1;
 			try {
-				end = std::stoll(end_str);
+				end = ParseLineNumberString(end_str);
 			} catch (...) {
 				throw InvalidInputException("Invalid line range: '%s'", str);
 			}
 		} else if (!start_str.empty() && end_str.empty()) {
-			// Tail form: 100- or 100...
+			// Tail form: 100- or 100... or +10- (from 10th-last to end)
 			try {
-				start = std::stoll(start_str);
+				start = ParseLineNumberString(start_str);
 			} catch (...) {
 				throw InvalidInputException("Invalid line range: '%s'", str);
 			}
 			end = std::numeric_limits<int64_t>::max();
 		} else if (!start_str.empty() && !end_str.empty()) {
-			// Full range: 100-200 or 100...200
+			// Full range: 100-200, 100...200, +10-50, 10-+5, +10-+5
 			try {
-				start = std::stoll(start_str);
-				end = std::stoll(end_str);
+				start = ParseLineNumberString(start_str);
+				end = ParseLineNumberString(end_str);
 			} catch (...) {
 				throw InvalidInputException("Invalid line range: '%s'", str);
 			}
@@ -464,23 +495,27 @@ LineRange LineSelection::ParseRangeString(const string &str) {
 			throw InvalidInputException("Invalid line range: '%s'", str);
 		}
 
-		if (start < 1) {
+		// Validate: positive numbers must be >= 1, negative (from-end) are allowed
+		if (start > 0 && start < 1) {
 			throw InvalidInputException("Line range start must be >= 1, got %lld", start);
 		}
-		if (end < start) {
+		// For fully positive ranges, end must be >= start
+		// For mixed/negative ranges, validation happens after resolution
+		if (start > 0 && end > 0 && end < start) {
 			throw InvalidInputException("Line range end must be >= start, got %lld-%lld", start, end);
 		}
 
 		range = LineRange(start, end);
 	} else {
-		// Single number
+		// Single number or +N (from end)
 		int64_t line;
 		try {
-			line = std::stoll(line_spec);
+			line = ParseLineNumberString(line_spec);
 		} catch (...) {
 			throw InvalidInputException("Invalid line number: '%s'", str);
 		}
-		if (line < 1) {
+		// Positive must be >= 1, negative (from-end) is allowed
+		if (line > 0 && line < 1) {
 			throw InvalidInputException("Line number must be >= 1, got %lld", line);
 		}
 		range = LineRange(line, line);
@@ -567,11 +602,62 @@ void LineSelection::AddContext(int64_t before, int64_t after) {
 	}
 
 	for (auto &range : ranges_) {
-		range.start = std::max(int64_t(1), range.start - before);
-		range.end = range.end + after;
+		// Only adjust positive line numbers; negative ones will be resolved later
+		if (range.start > 0) {
+			range.start = std::max(int64_t(1), range.start - before);
+		}
+		if (range.end > 0 && range.end != std::numeric_limits<int64_t>::max()) {
+			range.end = range.end + after;
+		}
 	}
 
-	// Re-merge in case context caused overlaps
+	// Re-merge in case context caused overlaps (only for positive ranges)
+	ranges_ = MergeRanges(std::move(ranges_));
+}
+
+bool LineSelection::HasFromEndReferences() const {
+	if (match_all_) {
+		return false;
+	}
+	for (const auto &range : ranges_) {
+		if (range.start < 0 || range.end < 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void LineSelection::ResolveFromEnd(int64_t total_lines) {
+	if (match_all_) {
+		return;
+	}
+
+	for (auto &range : ranges_) {
+		// Convert negative (from-end) references to positive
+		// -1 means last line = total_lines
+		// -10 means 10th from end = total_lines - 10 + 1 = total_lines - 9
+		if (range.start < 0) {
+			range.start = total_lines + range.start + 1;
+			if (range.start < 1) {
+				range.start = 1; // Clamp to first line
+			}
+		}
+		if (range.end < 0) {
+			range.end = total_lines + range.end + 1;
+			if (range.end < 1) {
+				range.end = 1; // Clamp to first line
+			}
+		}
+
+		// Handle case where start > end after resolution (invalid range)
+		if (range.start > range.end) {
+			// Make it an empty range that won't match anything
+			range.start = 0;
+			range.end = -1;
+		}
+	}
+
+	// Re-sort and merge after resolution
 	ranges_ = MergeRanges(std::move(ranges_));
 }
 

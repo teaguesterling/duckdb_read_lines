@@ -18,8 +18,12 @@ struct ParseTextLinesGlobalState : public GlobalTableFunctionState {
 	idx_t position; // Current position in text
 	int64_t current_line_number;
 	bool finished;
+	bool initialized;
+	LineSelection resolved_selection;
 
-	ParseTextLinesGlobalState() : position(0), current_line_number(0), finished(false) {
+	ParseTextLinesGlobalState()
+	    : position(0), current_line_number(0), finished(false), initialized(false),
+	      resolved_selection(LineSelection::All()) {
 	}
 
 	idx_t MaxThreads() const override {
@@ -74,6 +78,32 @@ static unique_ptr<GlobalTableFunctionState> ParseTextLinesInit(ClientContext &co
 	return make_uniq<ParseTextLinesGlobalState>();
 }
 
+// Count total lines in text
+static int64_t CountLinesInText(const string &text) {
+	int64_t count = 0;
+	idx_t pos = 0;
+	while (pos < text.size()) {
+		char c = text[pos];
+		if (c == '\n') {
+			count++;
+			pos++;
+		} else if (c == '\r') {
+			count++;
+			pos++;
+			if (pos < text.size() && text[pos] == '\n') {
+				pos++;
+			}
+		} else {
+			pos++;
+		}
+	}
+	// Count last line if text doesn't end with newline
+	if (!text.empty() && text.back() != '\n' && text.back() != '\r') {
+		count++;
+	}
+	return count;
+}
+
 // Extract a line from text starting at position, handling \n, \r\n, and \r line endings
 // Returns the line content (including line ending) and updates position to after the line
 static string ExtractLine(const string &text, idx_t &position) {
@@ -114,8 +144,21 @@ static void ParseTextLinesFunction(ClientContext &context, TableFunctionInput &d
 		return;
 	}
 
-	idx_t output_row = 0;
 	const string &text = bind_data.text;
+
+	// Initialize resolved selection on first call
+	if (!state.initialized) {
+		state.initialized = true;
+		if (bind_data.line_selection.HasFromEndReferences()) {
+			int64_t total_lines = CountLinesInText(text);
+			state.resolved_selection = bind_data.line_selection;
+			state.resolved_selection.ResolveFromEnd(total_lines);
+		} else {
+			state.resolved_selection = bind_data.line_selection;
+		}
+	}
+
+	idx_t output_row = 0;
 
 	while (output_row < STANDARD_VECTOR_SIZE && state.position < text.size()) {
 		auto line_start_offset = static_cast<int64_t>(state.position);
@@ -124,9 +167,9 @@ static void ParseTextLinesFunction(ClientContext &context, TableFunctionInput &d
 		state.current_line_number++;
 
 		// Check if we should include this line
-		if (!bind_data.line_selection.ShouldIncludeLine(state.current_line_number)) {
+		if (!state.resolved_selection.ShouldIncludeLine(state.current_line_number)) {
 			// Check if we've passed all ranges
-			if (bind_data.line_selection.PastAllRanges(state.current_line_number)) {
+			if (state.resolved_selection.PastAllRanges(state.current_line_number)) {
 				state.finished = true;
 				break;
 			}

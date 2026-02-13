@@ -647,3 +647,73 @@ ORDER BY v.path;
 ----
 true	5
 false	3
+
+# =============================================================================
+# From-end references (+N syntax)
+# =============================================================================
+
+# Test +N single line (Nth from end): +1 = last line
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc\nd\ne', lines := '+1');
+----
+5	e	8
+
+# Test +N single line: +3 = 3rd from end
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc\nd\ne', lines := '+3');
+----
+3	c	4
+
+# Test +N- range (from Nth-last to end)
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc\nd\ne', lines := '+3-');
+----
+3	c	4
+4	d	6
+5	e	8
+
+# Test +N-+M range (from Nth-last to Mth-last)
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc\nd\ne', lines := '+4-+2');
+----
+2	b	2
+3	c	4
+4	d	6
+
+# Test mixed range: N-+M (from line N to Mth-last)
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc\nd\ne', lines := '2-+2');
+----
+2	b	2
+3	c	4
+4	d	6
+
+# Test +N with context
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc\nd\ne', lines := '+3 +/-1');
+----
+2	b	2
+3	c	4
+4	d	6
+
+# Test +N that exceeds file length (should clamp)
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset FROM parse_lines(E'a\nb\nc', lines := '+10');
+----
+1	a	0
+
+# Test +N with file read
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt', '+2');
+----
+4	line four
+
+# Test +N- with file read (last 3 lines)
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt', '+3-');
+----
+3	line three
+4	line four
+5	line five

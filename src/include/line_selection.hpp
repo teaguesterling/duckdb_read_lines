@@ -39,6 +39,13 @@ public:
 		return match_all_;
 	}
 
+	// Check if selection has any "from end" references (negative line numbers)
+	bool HasFromEndReferences() const;
+
+	// Resolve "from end" references given the total line count
+	// Converts negative line numbers to positive (e.g., -10 with 100 lines -> 91)
+	void ResolveFromEnd(int64_t total_lines);
+
 	// Get the minimum and maximum line numbers in selection
 	int64_t MinLine() const;
 	int64_t MaxLine() const;

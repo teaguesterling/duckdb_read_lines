@@ -26,9 +26,11 @@ struct ReadTextLinesGlobalState : public GlobalTableFunctionState {
 	string current_file_path;
 	bool file_finished;
 	FileSystem *fs;
+	LineSelection resolved_selection; // Per-file resolved selection (handles from-end refs)
 
 	ReadTextLinesGlobalState()
-	    : file_index(0), current_line_number(0), current_byte_offset(0), file_finished(true), fs(nullptr) {
+	    : file_index(0), current_line_number(0), current_byte_offset(0), file_finished(true), fs(nullptr),
+	      resolved_selection(LineSelection::All()) {
 	}
 
 	idx_t MaxThreads() const override {
@@ -122,6 +124,29 @@ static unique_ptr<GlobalTableFunctionState> ReadTextLinesInit(ClientContext &con
 	return std::move(result);
 }
 
+// Count total lines in a file (for resolving from-end references)
+static int64_t CountLinesInFile(FileHandle &file) {
+	int64_t count = 0;
+	file.Seek(0);
+	while (true) {
+		try {
+			string line = file.ReadLine();
+			if (line.empty()) {
+				auto current_pos = file.SeekPosition();
+				auto file_size = file.GetFileSize();
+				if (current_pos >= file_size) {
+					break;
+				}
+			}
+			count++;
+		} catch (...) {
+			break;
+		}
+	}
+	file.Seek(0);
+	return count;
+}
+
 static bool OpenNextFile(ReadTextLinesGlobalState &state, const ReadTextLinesBindData &bind_data) {
 	while (state.file_index < bind_data.files.size()) {
 		auto &file_info = bind_data.files[state.file_index];
@@ -133,6 +158,17 @@ static bool OpenNextFile(ReadTextLinesGlobalState &state, const ReadTextLinesBin
 			state.current_line_number = 0;
 			state.current_byte_offset = 0;
 			state.file_finished = false;
+
+			// Handle from-end references (e.g., +10 meaning 10th line from end)
+			if (bind_data.line_selection.HasFromEndReferences()) {
+				// Count lines first, then resolve
+				int64_t total_lines = CountLinesInFile(*state.current_file);
+				state.resolved_selection = bind_data.line_selection;
+				state.resolved_selection.ResolveFromEnd(total_lines);
+			} else {
+				state.resolved_selection = bind_data.line_selection;
+			}
+
 			return true;
 		} catch (std::exception &e) {
 			if (!bind_data.ignore_errors) {
@@ -180,8 +216,8 @@ static void ReadTextLinesFunction(ClientContext &context, TableFunctionInput &da
 			state.current_line_number++;
 			state.current_byte_offset = state.current_file->SeekPosition();
 
-			if (!bind_data.line_selection.ShouldIncludeLine(state.current_line_number)) {
-				if (bind_data.line_selection.PastAllRanges(state.current_line_number)) {
+			if (!state.resolved_selection.ShouldIncludeLine(state.current_line_number)) {
+				if (state.resolved_selection.PastAllRanges(state.current_line_number)) {
 					state.file_finished = true;
 					break;
 				}
@@ -246,9 +282,11 @@ struct ReadTextLinesLateralState : public LocalTableFunctionState {
 	int64_t current_byte_offset;
 	bool file_open;
 	idx_t current_row;
+	LineSelection resolved_selection; // Per-file resolved selection
 
 	ReadTextLinesLateralState()
-	    : fs(nullptr), current_line_number(0), current_byte_offset(0), file_open(false), current_row(0) {
+	    : fs(nullptr), current_line_number(0), current_byte_offset(0), file_open(false), current_row(0),
+	      resolved_selection(LineSelection::All()) {
 	}
 };
 
@@ -342,6 +380,15 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 				state.current_line_number = 0;
 				state.current_byte_offset = 0;
 				state.file_open = true;
+
+				// Handle from-end references (e.g., +10 meaning 10th line from end)
+				if (bind_data.line_selection.HasFromEndReferences()) {
+					int64_t total_lines = CountLinesInFile(*state.current_file);
+					state.resolved_selection = bind_data.line_selection;
+					state.resolved_selection.ResolveFromEnd(total_lines);
+				} else {
+					state.resolved_selection = bind_data.line_selection;
+				}
 			} catch (std::exception &e) {
 				if (!bind_data.ignore_errors) {
 					throw;
@@ -379,8 +426,8 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 			state.current_byte_offset = state.current_file->SeekPosition();
 
 			// Check line selection
-			if (!bind_data.line_selection.ShouldIncludeLine(state.current_line_number)) {
-				if (bind_data.line_selection.PastAllRanges(state.current_line_number)) {
+			if (!state.resolved_selection.ShouldIncludeLine(state.current_line_number)) {
+				if (state.resolved_selection.PastAllRanges(state.current_line_number)) {
 					state.file_open = false;
 					state.current_row++;
 					break;
