@@ -467,6 +467,49 @@ FROM read_lines('test/data/simple.txt:3', lines := 1);
 ----
 1	line one
 
+# Test path with from-end single line: file:+N
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt:+2');
+----
+4	line four
+
+# Test path with from-end range: file:+N-
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt:+3-');
+----
+3	line three
+4	line four
+5	line five
+
+# Test path with from-end to from-end: file:+N-+M
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt:+4-+2');
+----
+2	line two
+3	line three
+4	line four
+
+# Test path with mixed range: file:N-+M
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt:2-+2');
+----
+2	line two
+3	line three
+4	line four
+
+# Test path with from-end and context: file:+N +/-C
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt:+3 +/-1');
+----
+2	line two
+3	line three
+4	line four
+
 # =============================================================================
 # read_lines file-based tests
 # =============================================================================

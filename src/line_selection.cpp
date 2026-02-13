@@ -682,10 +682,11 @@ std::pair<string, LineSelection> LineSelection::ParsePathWithLineSpec(const stri
 			// Check what follows the colon
 			if (i < path.length()) {
 				char next = path[i];
-				// Valid line spec starts: digit, '-', or '.'
-				if (std::isdigit(next) || next == '-' || next == '.') {
+				// Valid line spec starts: digit, '-', '.', or '+' (from-end)
+				if (std::isdigit(next) || next == '-' || next == '.' || next == '+') {
 					// Additional check: if '-', must be followed by digit (head form)
 					// or if '.', must be followed by '..' (ellipsis)
+					// or if '+', must be followed by digit (from-end form)
 					if (next == '-') {
 						if (i + 1 < path.length() && std::isdigit(path[i + 1])) {
 							colon_pos = i - 1;
@@ -693,6 +694,11 @@ std::pair<string, LineSelection> LineSelection::ParsePathWithLineSpec(const stri
 						}
 					} else if (next == '.') {
 						if (i + 2 < path.length() && path[i + 1] == '.' && path[i + 2] == '.') {
+							colon_pos = i - 1;
+							break;
+						}
+					} else if (next == '+') {
+						if (i + 1 < path.length() && std::isdigit(path[i + 1])) {
 							colon_pos = i - 1;
 							break;
 						}
