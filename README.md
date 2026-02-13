@@ -12,6 +12,9 @@ SELECT * FROM read_lines('app.log');
 SELECT * FROM read_lines('app.log', '100-200');
 SELECT * FROM read_lines('app.log', '42 +/-5');
 
+-- Read last 10 lines
+SELECT * FROM read_lines('app.log', '+10-');
+
 -- Read specific lines (path-embedded)
 SELECT * FROM read_lines('src/file.py:42 +/-5');
 
@@ -52,6 +55,9 @@ A line spec is a mini-language for selecting lines:
 | `N...M` | Range (alternative) | `10...20` |
 | `-N` or `...N` | First N lines (head) | `-100` |
 | `N-` or `N...` | From line N to end (tail) | `100-` |
+| `+N` | Nth line from end | `+5` (5th from end) |
+| `+N-` | Last N lines | `+10-` (last 10 lines) |
+| `+N-+M` | From Nth-last to Mth-last | `+10-+5` |
 | `spec +/-C` | With C lines context | `42 +/-3` |
 | `spec -B +A` | With B before, A after | `42 -2 +5` |
 
@@ -65,6 +71,7 @@ read_lines('file.py:10-20')        -- lines 10-20
 read_lines('file.py:42 +/-3')      -- line 42 with 3 lines context
 read_lines('file.py:-50')          -- first 50 lines
 read_lines('file.py:100-')         -- from line 100 to end
+read_lines('file.py:+10-')         -- last 10 lines
 ```
 
 If a file literally named `file.py:42` exists, it takes precedence.
@@ -155,8 +162,17 @@ FROM read_lines('app.log', lines := '1000-1100');
 -- First 20 lines
 SELECT * FROM read_lines('data.csv', lines := '-20');
 
+-- Last 20 lines (from-end syntax)
+SELECT * FROM read_lines('data.csv', lines := '+20-');
+
 -- Last section (from line 500 onward)
 SELECT * FROM read_lines('data.csv', lines := '500-');
+
+-- 5th line from end
+SELECT * FROM read_lines('data.csv', lines := '+5');
+
+-- Lines from 10th-last to 5th-last
+SELECT * FROM read_lines('data.csv', lines := '+10-+5');
 ```
 
 ### Find errors with context
