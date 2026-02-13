@@ -72,6 +72,8 @@ read_lines('file.py:42 +/-3')      -- line 42 with 3 lines context
 read_lines('file.py:-50')          -- first 50 lines
 read_lines('file.py:100-')         -- from line 100 to end
 read_lines('file.py:+10-')         -- last 10 lines
+read_lines('file.py:+5')           -- 5th line from end
+read_lines('file.py:+10-+5')       -- from 10th-last to 5th-last
 ```
 
 If a file literally named `file.py:42` exists, it takes precedence.
