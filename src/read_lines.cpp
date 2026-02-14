@@ -1,5 +1,6 @@
 #include "read_lines_extension.hpp"
 #include "line_selection.hpp"
+#include "compat.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/common/file_system.hpp"
@@ -45,7 +46,7 @@ static unique_ptr<FunctionData> ReadTextLinesBind(ClientContext &context, TableF
 
 	// Try the original path first - if it exists or matches files, use it as-is
 	// This handles cases where filenames contain colons (e.g., "file:2.txt")
-	auto files = fs.GlobFiles(input_path, context, FileGlobOptions::ALLOW_EMPTY);
+	auto files = compat::GlobFilesCompat(fs, input_path, context, FileGlobOptions::ALLOW_EMPTY);
 
 	string glob_pattern = input_path;
 	LineSelection path_line_selection = LineSelection::All();
@@ -55,7 +56,7 @@ static unique_ptr<FunctionData> ReadTextLinesBind(ClientContext &context, TableF
 		auto parsed_result = LineSelection::ParsePathWithLineSpec(input_path);
 		if (parsed_result.first != input_path) {
 			// Path was parsed differently, try globbing with the extracted path
-			files = fs.GlobFiles(parsed_result.first, context, FileGlobOptions::ALLOW_EMPTY);
+			files = compat::GlobFilesCompat(fs, parsed_result.first, context, FileGlobOptions::ALLOW_EMPTY);
 			if (!files.empty()) {
 				glob_pattern = parsed_result.first;
 				path_line_selection = std::move(parsed_result.second);
