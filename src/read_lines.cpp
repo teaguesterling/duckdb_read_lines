@@ -250,8 +250,8 @@ TableFunctionSet ReadLinesFunction() {
 	set.AddFunction(func1);
 
 	// Two arguments: read_lines(path, lines)
-	TableFunction func2("read_lines", {LogicalType::VARCHAR, LogicalType::ANY}, ReadTextLinesFunction, ReadTextLinesBind,
-	                    ReadTextLinesInit);
+	TableFunction func2("read_lines", {LogicalType::VARCHAR, LogicalType::ANY}, ReadTextLinesFunction,
+	                    ReadTextLinesBind, ReadTextLinesInit);
 	func2.named_parameters["before"] = LogicalType::BIGINT;
 	func2.named_parameters["after"] = LogicalType::BIGINT;
 	func2.named_parameters["context"] = LogicalType::BIGINT;
