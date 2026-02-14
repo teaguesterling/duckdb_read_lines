@@ -760,3 +760,47 @@ FROM read_lines('test/data/simple.txt', '+3-');
 3	line three
 4	line four
 5	line five
+
+# =============================================================================
+# Lateral with positional lines argument
+# =============================================================================
+
+# Test lateral with positional range
+query II
+SELECT l.line_number, rtrim(l.content, chr(10) || chr(13))
+FROM (VALUES ('test/data/simple.txt')) AS v(path),
+     read_lines_lateral(v.path, '2-4') AS l
+ORDER BY l.line_number;
+----
+2	line two
+3	line three
+4	line four
+
+# Test lateral with positional single line
+query II
+SELECT l.line_number, rtrim(l.content, chr(10) || chr(13))
+FROM (VALUES ('test/data/simple.txt')) AS v(path),
+     read_lines_lateral(v.path, 3) AS l;
+----
+3	line three
+
+# Test lateral with positional from-end
+query II
+SELECT l.line_number, rtrim(l.content, chr(10) || chr(13))
+FROM (VALUES ('test/data/simple.txt')) AS v(path),
+     read_lines_lateral(v.path, '+2-') AS l
+ORDER BY l.line_number;
+----
+4	line four
+5	line five
+
+# Test lateral with context in line spec
+query II
+SELECT l.line_number, rtrim(l.content, chr(10) || chr(13))
+FROM (VALUES ('test/data/simple.txt')) AS v(path),
+     read_lines_lateral(v.path, '3 +/-1') AS l
+ORDER BY l.line_number;
+----
+2	line two
+3	line three
+4	line four

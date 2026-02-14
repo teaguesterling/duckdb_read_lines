@@ -293,30 +293,30 @@ struct ReadTextLinesLateralState : public LocalTableFunctionState {
 static unique_ptr<FunctionData> ReadTextLinesLateralBind(ClientContext &context, TableFunctionBindInput &input,
                                                          vector<LogicalType> &return_types, vector<string> &names) {
 	LineSelection line_selection = LineSelection::All();
-	int64_t before_context = 0;
-	int64_t after_context = 0;
 	bool ignore_errors = false;
 
-	for (auto &param : input.named_parameters) {
-		auto &name = param.first;
-		auto &value = param.second;
+	// For in_out functions, additional positional arguments appear in input_table_names.
+	// The second argument (lines selection) is at index 1.
+	if (input.input_table_names.size() > 1) {
+		// The argument value is stored as the "column name"
+		string lines_arg = input.input_table_names[1];
 
-		if (name == "lines") {
-			line_selection = LineSelection::Parse(value);
-		} else if (name == "before") {
-			before_context = value.GetValue<int64_t>();
-		} else if (name == "after") {
-			after_context = value.GetValue<int64_t>();
-		} else if (name == "context") {
-			before_context = value.GetValue<int64_t>();
-			after_context = before_context;
-		} else if (name == "ignore_errors") {
-			ignore_errors = value.GetValue<bool>();
+		// Strip surrounding quotes if present (string literals come with quotes)
+		if (lines_arg.size() >= 2 && lines_arg.front() == '\'' && lines_arg.back() == '\'') {
+			lines_arg = lines_arg.substr(1, lines_arg.size() - 2);
+		}
+
+		if (!lines_arg.empty()) {
+			// Parse as string - LineSelection::Parse handles both integers and line specs
+			line_selection = LineSelection::Parse(Value(lines_arg));
 		}
 	}
 
-	if (before_context > 0 || after_context > 0) {
-		line_selection.AddContext(before_context, after_context);
+	// Check for second positional argument (lines)
+	// Note: Named parameters don't work with in_out functions, so we only support positional.
+	// Context can be embedded in the lines spec (e.g., '42 +/-3').
+	if (input.inputs.size() > 1 && !input.inputs[1].IsNull()) {
+		line_selection = LineSelection::Parse(input.inputs[1]);
 	}
 
 	return_types.push_back(LogicalType::BIGINT);
@@ -471,19 +471,24 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 	return OperatorResultType::NEED_MORE_INPUT;
 }
 
-TableFunction ReadLinesLateralFunction() {
-	TableFunction func("read_lines_lateral", {LogicalType::VARCHAR}, nullptr, ReadTextLinesLateralBind, nullptr,
-	                   ReadTextLinesLateralLocalInit);
+TableFunctionSet ReadLinesLateralFunction() {
+	TableFunctionSet set("read_lines_lateral");
 
-	func.in_out_function = ReadTextLinesLateralInOut;
+	// Single argument: read_lines_lateral(path)
+	TableFunction func1("read_lines_lateral", {LogicalType::VARCHAR}, nullptr, ReadTextLinesLateralBind, nullptr,
+	                    ReadTextLinesLateralLocalInit);
+	func1.in_out_function = ReadTextLinesLateralInOut;
+	set.AddFunction(func1);
 
-	func.named_parameters["lines"] = LogicalType::ANY;
-	func.named_parameters["before"] = LogicalType::BIGINT;
-	func.named_parameters["after"] = LogicalType::BIGINT;
-	func.named_parameters["context"] = LogicalType::BIGINT;
-	func.named_parameters["ignore_errors"] = LogicalType::BOOLEAN;
+	// Two arguments: read_lines_lateral(path, lines)
+	// Note: Named parameters don't work with in_out functions, so we only support positional.
+	// Context can be embedded in the lines spec (e.g., '+5 +/-2').
+	TableFunction func2("read_lines_lateral", {LogicalType::VARCHAR, LogicalType::ANY}, nullptr,
+	                    ReadTextLinesLateralBind, nullptr, ReadTextLinesLateralLocalInit);
+	func2.in_out_function = ReadTextLinesLateralInOut;
+	set.AddFunction(func2);
 
-	return func;
+	return set;
 }
 
 } // namespace duckdb

@@ -10,7 +10,7 @@ namespace duckdb {
 
 // Forward declarations - defined in separate files
 TableFunctionSet ReadLinesFunction();
-TableFunction ReadLinesLateralFunction();
+TableFunctionSet ReadLinesLateralFunction();
 TableFunction ParseLinesFunction();
 
 void ReadLinesExtension::Load(ExtensionLoader &loader) {
