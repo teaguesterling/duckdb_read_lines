@@ -116,6 +116,10 @@ static unique_ptr<FunctionData> ReadTextLinesBind(ClientContext &context, TableF
 	return_types.push_back(LogicalType::VARCHAR);
 	names.push_back("file_path");
 
+	if (files.empty() && !ignore_errors) {
+		throw IOException("No files found that match the pattern \"%s\"", input_path);
+	}
+
 	return make_uniq<ReadTextLinesBindData>(std::move(files), std::move(line_selection), ignore_errors);
 }
 

@@ -655,9 +655,21 @@ FROM read_lines('test/data/simple.txt', lines := [1, 3, 5]);
 3	line three
 5	line five
 
-# Test nonexistent file returns empty (glob with no matches)
-query I
+# Test nonexistent file raises error
+statement error
+SELECT count(*) FROM read_lines('nonexistent_file.txt');
+----
+No files found that match the pattern
+
+# Test nonexistent glob pattern raises error
+statement error
 SELECT count(*) FROM read_lines('nonexistent_file_pattern_*.txt');
+----
+No files found that match the pattern
+
+# Test nonexistent file with ignore_errors returns empty
+query I
+SELECT count(*) FROM read_lines('nonexistent_file.txt', ignore_errors := true);
 ----
 0
 
