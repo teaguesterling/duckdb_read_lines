@@ -1,6 +1,7 @@
 #include "read_lines_extension.hpp"
 #include "line_selection.hpp"
 #include "compat.hpp"
+#include "duckdb_compat.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/common/file_system.hpp"
@@ -238,7 +239,7 @@ static void ReadTextLinesFunction(ClientContext &context, TableFunctionInput &da
 		}
 	}
 
-	output.SetCardinality(output_row);
+	CompatSetOutputCardinality(output, output_row);
 }
 
 TableFunctionSet ReadLinesFunction() {
@@ -353,7 +354,7 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 	auto &state = data_p.local_state->Cast<ReadTextLinesLateralState>();
 
 	if (input.size() == 0) {
-		output.SetCardinality(0);
+		CompatSetOutputCardinality(output, 0);
 		return OperatorResultType::NEED_MORE_INPUT;
 	}
 
@@ -364,7 +365,7 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 		if (!state.file_open) {
 			if (state.current_row >= input.size()) {
 				// Done with all input rows
-				output.SetCardinality(output_row);
+				CompatSetOutputCardinality(output, output_row);
 				state.current_row = 0;
 				return OperatorResultType::NEED_MORE_INPUT;
 			}
@@ -460,7 +461,7 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 		}
 	}
 
-	output.SetCardinality(output_row);
+	CompatSetOutputCardinality(output, output_row);
 
 	// More output from current file?
 	if (state.file_open) {
