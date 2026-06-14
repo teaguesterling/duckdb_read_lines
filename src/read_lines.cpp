@@ -413,6 +413,17 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 				state.current_byte_offset = 0;
 				state.file_open = true;
 
+				// Lateral joins require seekable sources for correct EOF detection
+				try {
+					(void)state.current_file->SeekPosition();
+				} catch (const std::exception &) {
+					throw IOException(
+					    "read_lines_lateral does not support non-seekable sources "
+					    "(pipes, virtual URIs). Use read_lines('%s') as a table "
+					    "function instead.",
+					    file_path);
+				}
+
 				// Handle from-end references (e.g., +10 meaning 10th line from end)
 				if (bind_data.line_selection.HasFromEndReferences()) {
 					int64_t total_lines = CountLinesInFile(*state.current_file);
