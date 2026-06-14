@@ -132,7 +132,18 @@ static unique_ptr<GlobalTableFunctionState> ReadTextLinesInit(ClientContext &con
 // Count total lines in a file (for resolving from-end references)
 static int64_t CountLinesInFile(FileHandle &file) {
 	int64_t count = 0;
-	file.Seek(0);
+
+	try {
+		(void)file.SeekPosition();
+		file.Seek(0);
+	} catch (const std::exception &e) {
+		throw IOException(
+		    "from-end line selection requires a seekable source. "
+		    "Pipes and streams do not support Seek/SeekPosition. "
+		    "Use only positive line numbers/ranges. Details: %s",
+		    e.what());
+	}
+
 	while (true) {
 		try {
 			string line = file.ReadLine();
@@ -210,16 +221,28 @@ static void ReadTextLinesFunction(ClientContext &context, TableFunctionInput &da
 			}
 
 			if (line.empty()) {
-				auto current_pos = state.current_file->SeekPosition();
-				auto file_size = state.current_file->GetFileSize();
-				if (current_pos >= file_size) {
+				bool at_eof = true;
+				try {
+					auto current_pos = state.current_file->SeekPosition();
+					auto file_size = state.current_file->GetFileSize();
+					if (current_pos < file_size) {
+						at_eof = false;
+					}
+				} catch (const std::exception &) {
+					at_eof = true;
+				}
+				if (at_eof) {
 					state.file_finished = true;
 					break;
 				}
 			}
 
 			state.current_line_number++;
-			state.current_byte_offset = state.current_file->SeekPosition();
+			try {
+				state.current_byte_offset = state.current_file->SeekPosition();
+			} catch (const std::exception &) {
+				state.current_byte_offset = line_start_offset + static_cast<int64_t>(line.size()) + 1;
+			}
 
 			if (!state.resolved_selection.ShouldIncludeLine(state.current_line_number)) {
 				if (state.resolved_selection.PastAllRanges(state.current_line_number)) {
@@ -288,10 +311,11 @@ struct ReadTextLinesLateralState : public LocalTableFunctionState {
 	bool file_open;
 	idx_t current_row;
 	LineSelection resolved_selection; // Per-file resolved selection
+	idx_t chunks_processed;
 
 	ReadTextLinesLateralState()
 	    : fs(nullptr), current_line_number(0), current_byte_offset(0), file_open(false), current_row(0),
-	      resolved_selection(LineSelection::All()) {
+	      resolved_selection(LineSelection::All()), chunks_processed(0) {
 	}
 };
 
@@ -354,7 +378,7 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 
 	if (input.size() == 0) {
 		output.SetCardinality(0);
-		return OperatorResultType::NEED_MORE_INPUT;
+		return OperatorResultType::FINISHED;
 	}
 
 	idx_t output_row = 0;
@@ -363,9 +387,12 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 		// Need to open a new file?
 		if (!state.file_open) {
 			if (state.current_row >= input.size()) {
-				// Done with all input rows
 				output.SetCardinality(output_row);
 				state.current_row = 0;
+				state.chunks_processed++;
+				if (input.size() == 1 && state.chunks_processed >= 1) {
+					return OperatorResultType::FINISHED;
+				}
 				return OperatorResultType::NEED_MORE_INPUT;
 			}
 
@@ -418,9 +445,17 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 
 			// Check for EOF
 			if (line.empty()) {
-				auto current_pos = state.current_file->SeekPosition();
-				auto file_size = state.current_file->GetFileSize();
-				if (current_pos >= file_size) {
+				bool at_eof = true;
+				try {
+					auto current_pos = state.current_file->SeekPosition();
+					auto file_size = state.current_file->GetFileSize();
+					if (current_pos < file_size) {
+						at_eof = false;
+					}
+				} catch (const std::exception &) {
+					at_eof = true;
+				}
+				if (at_eof) {
 					state.file_open = false;
 					state.current_row++;
 					break;
@@ -428,7 +463,11 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 			}
 
 			state.current_line_number++;
-			state.current_byte_offset = state.current_file->SeekPosition();
+			try {
+				state.current_byte_offset = state.current_file->SeekPosition();
+			} catch (const std::exception &) {
+				state.current_byte_offset = line_start_offset + static_cast<int64_t>(line.size()) + 1;
+			}
 
 			// Check line selection
 			if (!state.resolved_selection.ShouldIncludeLine(state.current_line_number)) {
@@ -473,6 +512,10 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 	}
 
 	state.current_row = 0;
+	state.chunks_processed++;
+	if (input.size() == 1 && state.chunks_processed >= 1) {
+		return OperatorResultType::FINISHED;
+	}
 	return OperatorResultType::NEED_MORE_INPUT;
 }
 
