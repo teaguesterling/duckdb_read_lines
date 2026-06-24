@@ -137,11 +137,10 @@ static int64_t CountLinesInFile(FileHandle &file) {
 		(void)file.SeekPosition();
 		file.Seek(0);
 	} catch (const std::exception &e) {
-		throw IOException(
-		    "from-end line selection requires a seekable source. "
-		    "Pipes and streams do not support Seek/SeekPosition. "
-		    "Use only positive line numbers/ranges. Details: %s",
-		    e.what());
+		throw IOException("from-end line selection requires a seekable source. "
+		                  "Pipes and streams do not support Seek/SeekPosition. "
+		                  "Use only positive line numbers/ranges. Details: %s",
+		                  e.what());
 	}
 
 	while (true) {
@@ -413,15 +412,16 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 				state.current_byte_offset = 0;
 				state.file_open = true;
 
-				// Lateral joins require seekable sources for correct EOF detection
-				try {
-					(void)state.current_file->SeekPosition();
-				} catch (const std::exception &) {
-					throw IOException(
-					    "read_lines_lateral does not support non-seekable sources "
-					    "(pipes, virtual URIs). Use read_lines('%s') as a table "
-					    "function instead.",
-					    file_path);
+				// Lateral joins require seekable sources for correct EOF detection.
+				// Use CanSeek() rather than probing SeekPosition(): it is a
+				// side-effect-free query of the underlying file system (true for
+				// local files, false for pipes/streams) and does not perturb the
+				// read position that ReadLine() relies on below.
+				if (!state.current_file->CanSeek()) {
+					throw IOException("read_lines_lateral does not support non-seekable sources "
+					                  "(pipes, virtual URIs). Use read_lines('%s') as a table "
+					                  "function instead.",
+					                  file_path);
 				}
 
 				// Handle from-end references (e.g., +10 meaning 10th line from end)
