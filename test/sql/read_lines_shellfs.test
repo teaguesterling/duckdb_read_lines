@@ -7,7 +7,7 @@ require read_lines
 require shellfs
 
 # =============================================================================
-# read_lines with shellfs pipes (fallback byte tracking)
+# read_lines with shellfs pipes (full-stream buffering)
 # =============================================================================
 
 # Basic pipe read
@@ -19,7 +19,7 @@ FROM read_lines('printf "line1\nline2\nline3" |');
 2	line2
 3	line3
 
-# Pipe with line selection (forward-only, no from-end)
+# Pipe with line selection (forward-only)
 query II
 SELECT line_number, rtrim(content, chr(10) || chr(13))
 FROM read_lines('printf "a\nb\nc\nd\ne" |', '2-4');
@@ -35,7 +35,7 @@ FROM read_lines('printf "first\nsecond\nthird" |', 2);
 ----
 2	second
 
-# Byte offsets use fallback computation for pipes
+# Byte offsets are the position within the buffered stream
 query III
 SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset
 FROM read_lines('printf "aa\nbb\ncc" |');
@@ -45,24 +45,135 @@ FROM read_lines('printf "aa\nbb\ncc" |');
 3	cc	6
 
 # =============================================================================
-# read_lines_lateral with non-seekable source (should error)
+# read_lines_lateral with non-seekable sources (now supported)
+#
+# Previously read_lines_lateral threw "does not support non-seekable sources".
+# Non-seekable sources are now fully supported by buffering the whole stream,
+# so this assertion has been REVERSED from an error to a success.
 # =============================================================================
 
-statement error
-SELECT l.*
-FROM (VALUES ('printf "hello" |')) AS v(cmd),
+# Lateral over a single pipe -> 3 rows
+query II
+SELECT l.line_number, rtrim(l.content, chr(10) || chr(13))
+FROM (VALUES ('printf "x\ny\nz" |')) AS v(cmd),
+     read_lines_lateral(v.cmd) AS l
+ORDER BY l.line_number;
+----
+1	x
+2	y
+3	z
+
+# Correlated / multi-row: each row runs its OWN command (the command depends on
+# the left row) and gets its own line numbers.
+query III
+SELECT v.tag, l.line_number, rtrim(l.content, chr(10) || chr(13))
+FROM (VALUES
+        ('one',   'printf "a\nb" |'),
+        ('two',   'printf "c\nd\ne" |'),
+        ('three', 'printf "f" |')
+     ) AS v(tag, cmd),
+     read_lines_lateral(v.cmd) AS l
+ORDER BY v.tag, l.line_number;
+----
+one	1	a
+one	2	b
+three	1	f
+two	1	c
+two	2	d
+two	3	e
+
+# Lateral byte offsets are positions within each row's buffered stream
+query III
+SELECT l.line_number, rtrim(l.content, chr(10) || chr(13)), l.byte_offset
+FROM (VALUES ('printf "aa\nbb\ncc" |')) AS v(cmd),
+     read_lines_lateral(v.cmd) AS l
+ORDER BY l.line_number;
+----
+1	aa	0
+2	bb	3
+3	cc	6
+
+# Lateral with a line selection on a pipe
+query II
+SELECT l.line_number, rtrim(l.content, chr(10) || chr(13))
+FROM (VALUES ('printf "a\nb\nc\nd\ne" |')) AS v(cmd),
+     read_lines_lateral(v.cmd, '2-4') AS l
+ORDER BY l.line_number;
+----
+2	b
+3	c
+4	d
+
+# =============================================================================
+# Blank-line regression (critical)
+#
+# A blank line in the MIDDLE of a pipe's output must NOT be misread as EOF and
+# truncate the stream. printf "a\n\nc" yields 3 lines: "a", "" (empty), "c".
+# Assert for BOTH read_lines and read_lines_lateral.
+# =============================================================================
+
+# read_lines: blank middle line preserved, stream not truncated
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('printf "a\n\nc" |');
+----
+1	a
+2	(empty)
+3	c
+
+# read_lines: count is exactly 3 (no early truncation)
+query I
+SELECT count(*) FROM read_lines('printf "a\n\nc" |');
+----
+3
+
+# read_lines_lateral: blank middle line preserved, stream not truncated
+query II
+SELECT l.line_number, rtrim(l.content, chr(10) || chr(13))
+FROM (VALUES ('printf "a\n\nc" |')) AS v(cmd),
+     read_lines_lateral(v.cmd) AS l
+ORDER BY l.line_number;
+----
+1	a
+2	(empty)
+3	c
+
+# read_lines_lateral: count is exactly 3 (no early truncation)
+query I
+SELECT count(*)
+FROM (VALUES ('printf "a\n\nc" |')) AS v(cmd),
      read_lines_lateral(v.cmd) AS l;
 ----
-read_lines_lateral does not support non-seekable sources
+3
 
-# =============================================================================
-# From-end selection on non-seekable source (should error)
-# =============================================================================
-
-statement error
-SELECT * FROM read_lines('printf "a\nb\nc" |', '+2');
+# Multiple consecutive blank lines in the middle are all preserved
+query I
+SELECT count(*) FROM read_lines('printf "a\n\n\n\nb" |');
 ----
-from-end line selection requires a seekable source
+5
+
+# =============================================================================
+# From-end selection on non-seekable sources (now supported)
+#
+# Because the whole stream is buffered, its length is known, so from-end
+# references (e.g. '+2' = 2nd line from the end) now work on pipes too. This
+# assertion has been REVERSED from an error to a success.
+# =============================================================================
+
+# read_lines: from-end on a pipe
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('printf "a\nb\nc" |', '+2');
+----
+2	b
+
+# read_lines_lateral: from-end on a pipe
+query II
+SELECT l.line_number, rtrim(l.content, chr(10) || chr(13))
+FROM (VALUES ('printf "a\nb\nc\nd" |')) AS v(cmd),
+     read_lines_lateral(v.cmd, '+2') AS l;
+----
+3	c
 
 # =============================================================================
 # Regression: seekable file sources still work exactly as before
