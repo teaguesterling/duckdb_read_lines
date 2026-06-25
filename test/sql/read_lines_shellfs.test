@@ -6,6 +6,12 @@ require read_lines
 
 require shellfs
 
+# The pipe sources below run real shell commands (printf "..." |), which is a
+# POSIX-shell feature — `printf` is not available on the Windows CI runner, so
+# these tests are skipped there (the underlying non-seekable streaming logic is
+# platform-independent and exercised on Linux/macOS).
+require notwindows
+
 # =============================================================================
 # read_lines with shellfs pipes (full-stream buffering)
 # =============================================================================
