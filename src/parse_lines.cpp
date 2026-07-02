@@ -1,5 +1,6 @@
 #include "read_lines_extension.hpp"
 #include "line_selection.hpp"
+#include "duckdb_compat.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 
@@ -144,7 +145,7 @@ static void ParseTextLinesFunction(ClientContext &context, TableFunctionInput &d
 	auto &state = data_p.global_state->Cast<ParseTextLinesGlobalState>();
 
 	if (state.finished) {
-		output.SetCardinality(0);
+		CompatSetOutputCardinality(output, 0);
 		return;
 	}
 
@@ -192,7 +193,7 @@ static void ParseTextLinesFunction(ClientContext &context, TableFunctionInput &d
 		state.finished = true;
 	}
 
-	output.SetCardinality(output_row);
+	CompatSetOutputCardinality(output, output_row);
 }
 
 TableFunction ParseLinesFunction() {
