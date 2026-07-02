@@ -79,7 +79,9 @@ static unique_ptr<GlobalTableFunctionState> ParseTextLinesInit(ClientContext &co
 }
 
 // Count total lines in text
-static int64_t CountLinesInText(const string &text) {
+// Shared with read_lines.cpp (declared in read_lines_extension.hpp) so that
+// buffered non-seekable streams resolve from-end references identically.
+int64_t CountLinesInText(const string &text) {
 	int64_t count = 0;
 	idx_t pos = 0;
 	while (pos < text.size()) {
@@ -106,7 +108,9 @@ static int64_t CountLinesInText(const string &text) {
 
 // Extract a line from text starting at position, handling \n, \r\n, and \r line endings
 // Returns the line content (including line ending) and updates position to after the line
-static string ExtractLine(const string &text, idx_t &position) {
+// Shared with read_lines.cpp (declared in read_lines_extension.hpp) so that
+// buffered non-seekable streams split lines identically to parse_lines.
+string ExtractLine(const string &text, idx_t &position) {
 	if (position >= text.size()) {
 		return "";
 	}
