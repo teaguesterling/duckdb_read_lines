@@ -260,7 +260,11 @@ static void ApplyContextToRange(LineRange &range, int64_t before, int64_t after)
 		// Negative (from-end) reference - just adjust, clamping happens after resolution
 		range.start = range.start - before;
 	}
-	range.end = range.end + after;
+	// An open-ended tail range ('100-') already reaches EOF; adding after-context
+	// would overflow INT64_MAX (UB) and wrap the range negative/empty.
+	if (range.end != std::numeric_limits<int64_t>::max()) {
+		range.end = range.end + after;
+	}
 }
 
 // Check if string is a global context specifier like "+/-3" or "-/+3"

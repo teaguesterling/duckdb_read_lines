@@ -182,6 +182,34 @@ FROM (VALUES ('printf "a\nb\nc\nd" |')) AS v(cmd),
 3	c
 
 # =============================================================================
+# Exact content (no rtrim masking): terminators are preserved on pipes,
+# a trailing empty line is not dropped, and a BOM is stripped — identical
+# semantics to files and parse_lines on the same bytes.
+# =============================================================================
+
+query II
+SELECT line_number, replace(replace(content, chr(13), '<CR>'), chr(10), '<LF>')
+FROM read_lines('printf "a\n\nc" |') ORDER BY line_number;
+----
+1	a<LF>
+2	<LF>
+3	c
+
+# Trailing "\n"-terminated empty line survives on a pipe
+query I
+SELECT count(*) FROM read_lines('printf "a\n\n" |');
+----
+2
+
+# UTF-8 BOM is stripped from pipe output; offsets remain true stream offsets
+query III
+SELECT line_number, replace(content, chr(10), '<LF>'), byte_offset
+FROM read_lines('printf "\357\273\277hello\nworld\n" |') ORDER BY line_number;
+----
+1	hello<LF>	3
+2	world<LF>	9
+
+# =============================================================================
 # Regression: seekable file sources still work exactly as before
 # =============================================================================
 

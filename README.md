@@ -140,7 +140,7 @@ lines := [{line: 5}, {start: 10, stop: 20}, {lines: [30, 40]}]
 | `before` | BIGINT | Context lines before each selection |
 | `after` | BIGINT | Context lines after each selection |
 | `context` | BIGINT | Symmetric context (sets both before and after) |
-| `ignore_errors` | BOOL | Skip unreadable files in glob patterns |
+| `ignore_errors` | BOOL | Skip unreadable files in glob patterns and lines that are not valid UTF-8 (skipped lines keep their line number) |
 
 ## Examples
 
@@ -212,7 +212,23 @@ FROM my_table t,
 
 - **Line numbering**: 1-indexed (matches editors, grep, error messages)
 - **Range bounds**: Inclusive on both ends
-- **Line endings**: Preserved as-is (`\n`, `\r\n`, `\r`)
+- **Line endings**: `\n`, `\r\n`, and lone `\r` are all separators, and each
+  line's terminator is preserved in `content` (the final line keeps its lack
+  of one). A trailing terminator-final empty line is a real line: `"a\n\n"`
+  is 2 lines, matching `wc -l` and `parse_lines`.
+- **Line counting**: `read_lines`, `read_lines_lateral`, and `parse_lines`
+  split identical bytes identically, whether the source is a file or a pipe
+- **Byte offsets**: True source offsets of each line's first content byte
+- **BOM**: A UTF-8 byte-order mark at the start of a source is skipped, not
+  leaked into the first line (offsets remain true offsets, so line 1 of a
+  BOM'd file starts at byte 3)
+- **Invalid UTF-8**: A line that is not valid UTF-8 raises a clear error
+  naming the file and line; with `ignore_errors=true` the line is skipped and
+  keeps its line number
+- **Non-seekable sources**: Pipes and streams (e.g.
+  [shellfs](https://github.com/teaguesterling/duckdb_shellfs) commands) are
+  read incrementally; from-end references (`'+2'`) on a pipe buffer the whole
+  stream, since it cannot be rewound after counting
 - **Context clamping**: Context before line 1 or after EOF is clamped
 - **Short-circuit**: Scanning stops after passing all selected ranges
 - **Encoding**: UTF-8

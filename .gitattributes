@@ -1,0 +1,4 @@
+# Test fixtures are byte-exact: line terminators (LF, CRLF, lone CR), a UTF-8
+# BOM, and deliberately invalid UTF-8 are the thing under test. Never let git
+# normalize or convert them on checkout (e.g. CRLF conversion on Windows CI).
+test/data/* -text

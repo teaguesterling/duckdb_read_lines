@@ -1,0 +1,175 @@
+# name: test/sql/read_lines_line_endings.test
+# description: Line-splitting semantics — trailing empty lines, terminator
+# group: [sql]
+
+#              preservation, lone CR, BOM, invalid UTF-8, tail-range context.
+#              Regression tests for issue #5. Content is asserted EXACTLY
+#              (terminators encoded as <CR>/<LF>), never rtrim'd, so these
+#              tests cannot mask terminator bugs.
+
+require read_lines
+
+# =============================================================================
+# Trailing empty line ("a\n\n" = 2 lines; "\n" alone = 1 line)
+# Must agree with wc -l, grep -n '', and parse_lines.
+# =============================================================================
+
+query I
+SELECT count(*) FROM read_lines('test/data/trailing_blank.txt');
+----
+2
+
+query I
+SELECT count(*) FROM read_lines('test/data/only_newline.txt');
+----
+1
+
+# parse_lines agrees on the same bytes
+query I
+SELECT count(*) FROM parse_lines('a' || chr(10) || chr(10));
+----
+2
+
+# =============================================================================
+# Terminators are preserved in content (as the README documents)
+# =============================================================================
+
+query II
+SELECT line_number, replace(replace(content, chr(13), '<CR>'), chr(10), '<LF>')
+FROM read_lines('test/data/trailing_blank.txt') ORDER BY line_number;
+----
+1	a<LF>
+2	<LF>
+
+# CRLF endings: split correctly, both bytes preserved, true byte offsets
+query III
+SELECT line_number, replace(replace(content, chr(13), '<CR>'), chr(10), '<LF>'), byte_offset
+FROM read_lines('test/data/crlf.txt') ORDER BY line_number;
+----
+1	one<CR><LF>	0
+2	two<CR><LF>	5
+3	three<CR><LF>	10
+
+# A final line without a trailing terminator keeps its (lack of) terminator
+query II
+SELECT line_number, replace(replace(content, chr(13), '<CR>'), chr(10), '<LF>')
+FROM read_lines('test/data/no_trailing_newline.txt', '+1') ORDER BY line_number;
+----
+3	third
+
+# =============================================================================
+# Lone CR (classic-Mac) is a line separator, preserved in content
+# =============================================================================
+
+query III
+SELECT line_number, replace(replace(content, chr(13), '<CR>'), chr(10), '<LF>'), byte_offset
+FROM read_lines('test/data/lone_cr.txt') ORDER BY line_number;
+----
+1	a<CR>	0
+2	b<CR>	2
+3	c	4
+
+# parse_lines agrees on the same bytes
+query I
+SELECT count(*) FROM parse_lines('a' || chr(13) || 'b' || chr(13) || 'c');
+----
+3
+
+# =============================================================================
+# UTF-8 BOM is stripped from line 1; byte offsets stay true source offsets
+# =============================================================================
+
+query III
+SELECT line_number, replace(content, chr(10), '<LF>'), byte_offset
+FROM read_lines('test/data/bom.txt') ORDER BY line_number;
+----
+1	hello<LF>	3
+2	world<LF>	9
+
+# BOM'd first line compares equal to its logical content
+query I
+SELECT count(*) FROM read_lines('test/data/bom.txt')
+WHERE content = 'hello' || chr(10);
+----
+1
+
+# =============================================================================
+# Invalid UTF-8: clear error by default, skippable with ignore_errors
+# (line numbers stay true to the file when a line is skipped)
+# =============================================================================
+
+statement error
+SELECT * FROM read_lines('test/data/invalid_utf8.txt');
+----
+is not valid UTF-8
+
+query II
+SELECT line_number, replace(content, chr(10), '<LF>')
+FROM read_lines('test/data/invalid_utf8.txt', ignore_errors=true) ORDER BY line_number;
+----
+1	ok1<LF>
+3	ok3<LF>
+
+# =============================================================================
+# Tail range plus after-context ('2- +5') must not overflow into 0 rows
+# =============================================================================
+
+query I
+SELECT count(*) FROM read_lines('test/data/simple.txt', '2- +5');
+----
+4
+
+query I
+SELECT count(*) FROM read_lines('test/data/simple.txt', lines='3-', after=2);
+----
+3
+
+# =============================================================================
+# From-end references on files with non-LF endings resolve correctly
+# =============================================================================
+
+query II
+SELECT line_number, replace(replace(content, chr(13), '<CR>'), chr(10), '<LF>')
+FROM read_lines('test/data/crlf.txt', '+2');
+----
+2	two<CR><LF>
+
+query II
+SELECT line_number, replace(replace(content, chr(13), '<CR>'), chr(10), '<LF>')
+FROM read_lines('test/data/lone_cr.txt', '+1');
+----
+3	c
+
+# =============================================================================
+# read_lines_lateral agrees with read_lines on every fixture
+# =============================================================================
+
+query II
+SELECT l.line_number, replace(replace(l.content, chr(13), '<CR>'), chr(10), '<LF>')
+FROM (VALUES ('test/data/trailing_blank.txt')) v(p), read_lines_lateral(v.p) l
+ORDER BY l.line_number;
+----
+1	a<LF>
+2	<LF>
+
+query III
+SELECT l.line_number, replace(replace(l.content, chr(13), '<CR>'), chr(10), '<LF>'), l.byte_offset
+FROM (VALUES ('test/data/lone_cr.txt')) v(p), read_lines_lateral(v.p) l
+ORDER BY l.line_number;
+----
+1	a<CR>	0
+2	b<CR>	2
+3	c	4
+
+query III
+SELECT l.line_number, replace(l.content, chr(10), '<LF>'), l.byte_offset
+FROM (VALUES ('test/data/bom.txt')) v(p), read_lines_lateral(v.p) l
+ORDER BY l.line_number;
+----
+1	hello<LF>	3
+2	world<LF>	9
+
+statement error
+SELECT * FROM (VALUES ('test/data/invalid_utf8.txt')) v(p), read_lines_lateral(v.p) l;
+----
+is not valid UTF-8

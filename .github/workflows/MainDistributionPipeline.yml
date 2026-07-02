@@ -28,3 +28,31 @@ jobs:
       ci_tools_version: v1.5.3
       extension_name: read_lines
       format_checks: 'format;tidy'
+
+  # The sqllogictest runner silently skips test/sql/read_lines_shellfs.test
+  # ("require shellfs" is a skip, not a failure), so the non-seekable/pipe
+  # read paths get no coverage from the build job's `make test`. This job
+  # loads the built extension into a stock DuckDB CLI, installs shellfs from
+  # the community repository, and asserts the pipe behaviors directly.
+  pipe-tests:
+    name: Pipe tests (shellfs, non-seekable sources)
+    needs: duckdb-stable-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: read_lines-v1.5.3-extension-linux_amd64
+          path: /tmp/read_lines_artifact
+
+      - name: Install DuckDB CLI v1.5.3
+        run: |
+          curl -sSL -o /tmp/duckdb_cli.zip \
+            https://github.com/duckdb/duckdb/releases/download/v1.5.3/duckdb_cli-linux-amd64.zip
+          unzip -o /tmp/duckdb_cli.zip -d /tmp/duckdb-cli
+
+      - name: Run pipe smoke tests
+        run: |
+          ./scripts/pipe_smoke_test.sh /tmp/duckdb-cli/duckdb \
+            /tmp/read_lines_artifact/read_lines.duckdb_extension

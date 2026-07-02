@@ -7,6 +7,7 @@
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/open_file_info.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
+#include "utf8proc_wrapper.hpp"
 
 namespace duckdb {
 
@@ -20,26 +21,22 @@ struct ReadTextLinesBindData : public TableFunctionData {
 	}
 };
 
+// Forward declaration; defined below with the shared reading helpers.
+class BufferedLineReader;
+
 struct ReadTextLinesGlobalState : public GlobalTableFunctionState {
 	idx_t file_index;
 	unique_ptr<FileHandle> current_file;
+	unique_ptr<BufferedLineReader> reader;
 	int64_t current_line_number;
-	int64_t current_byte_offset;
 	string current_file_path;
 	bool file_finished;
 	FileSystem *fs;
 	LineSelection resolved_selection; // Per-file resolved selection (handles from-end refs)
 
-	// Non-seekable (pipe / stream) support: when the current source cannot
-	// seek, its entire contents are buffered up-front and lines are split from
-	// the buffer rather than via FileHandle::ReadLine + Seek-based EOF probing.
-	bool current_seekable;
-	string slurp_buffer;
-	idx_t slurp_pos;
-
 	ReadTextLinesGlobalState()
-	    : file_index(0), current_line_number(0), current_byte_offset(0), file_finished(true), fs(nullptr),
-	      resolved_selection(LineSelection::All()), current_seekable(true), slurp_pos(0) {
+	    : file_index(0), current_line_number(0), file_finished(true), fs(nullptr),
+	      resolved_selection(LineSelection::All()) {
 	}
 
 	idx_t MaxThreads() const override {
@@ -137,60 +134,140 @@ static unique_ptr<GlobalTableFunctionState> ReadTextLinesInit(ClientContext &con
 	return std::move(result);
 }
 
-// Count total lines in a file (for resolving from-end references)
-static int64_t CountLinesInFile(FileHandle &file) {
-	int64_t count = 0;
-
-	try {
-		(void)file.SeekPosition();
-		file.Seek(0);
-	} catch (const std::exception &e) {
-		throw IOException("from-end line selection requires a seekable source. "
-		                  "Pipes and streams do not support Seek/SeekPosition. "
-		                  "Use only positive line numbers/ranges. Details: %s",
-		                  e.what());
-	}
-
-	while (true) {
-		try {
-			string line = file.ReadLine();
-			if (line.empty()) {
-				auto current_pos = file.SeekPosition();
-				auto file_size = file.GetFileSize();
-				if (current_pos >= file_size) {
-					break;
-				}
-			}
-			count++;
-		} catch (...) {
-			break;
-		}
-	}
-	file.Seek(0);
-	return count;
-}
-
-// Read an entire non-seekable stream (pipe / virtual URI) into a string.
+// =============================================================================
+// BufferedLineReader
 //
-// A non-seekable source has no reliable file size and cannot be rewound, so
-// EOF must be detected by a 0-byte read rather than by comparing the read
-// position against GetFileSize(). We loop FileHandle::Read() (which returns the
-// number of bytes actually read) until it returns 0, which is the unambiguous
-// end-of-stream signal. Buffering the whole stream lets us split lines with the
-// same logic as parse_lines (correct blank lines, correct final line without a
-// trailing newline) and resolve from-end references deterministically.
-static string SlurpStream(FileHandle &file) {
-	static constexpr idx_t SLURP_BUFFER_SIZE = 65536;
-	string result;
-	char buffer[SLURP_BUFFER_SIZE];
-	while (true) {
-		int64_t bytes_read = file.Read(buffer, SLURP_BUFFER_SIZE);
-		if (bytes_read <= 0) {
-			break;
-		}
-		result.append(buffer, static_cast<size_t>(bytes_read));
+// The single reading path for every source, seekable or not. Reads the source
+// in large chunks (one FileHandle::Read call per chunk instead of the previous
+// syscall-per-byte ReadLine loop) and splits lines with the shared ExtractLine,
+// so files, pipes, and parse_lines all agree on the same bytes:
+//   - terminators (\n, \r\n, lone \r) are separators AND are preserved in the
+//     returned content, as the README documents;
+//   - a terminator-final stream does not grow a phantom trailing line, and a
+//     trailing empty line ("a\n\n") is not silently dropped;
+//   - a UTF-8 BOM at the start of the stream is skipped, not leaked into the
+//     first line's content (byte offsets remain true source offsets, so the
+//     first line of a BOM'd file starts at offset 3);
+//   - end of stream is a 0-byte Read(), which works for pipes and virtual
+//     URIs where SeekPosition()/GetFileSize() throw.
+// Memory stays bounded (longest line + one chunk) because consumed bytes are
+// compacted away on refill — except after SlurpAll(), which deliberately
+// buffers the whole stream to resolve from-end references on sources that
+// cannot rewind.
+// =============================================================================
+class BufferedLineReader {
+public:
+	explicit BufferedLineReader(FileHandle &file) : file(file) {
 	}
-	return result;
+
+	// Extract the next line, including its terminator. Returns false at end of
+	// stream. start_offset is the byte offset of the line's first content byte
+	// in the source.
+	bool NextLine(string &line, int64_t &start_offset) {
+		if (!EnsureLineBuffered()) {
+			return false;
+		}
+		start_offset = buffer_base + static_cast<int64_t>(pos);
+		line = ExtractLine(buffer, pos);
+		return true;
+	}
+
+	// Buffer the whole remaining stream. Needed before CountBufferedLines() on
+	// non-seekable sources, which cannot be rewound after counting.
+	void SlurpAll() {
+		SkipBOM();
+		while (!eof) {
+			Fill();
+		}
+	}
+
+	// Lines from the current position to end of stream. Call after SlurpAll()
+	// and before any NextLine().
+	int64_t CountBufferedLines() const {
+		return CountLinesInText(buffer, pos);
+	}
+
+private:
+	static constexpr idx_t FILL_CHUNK_SIZE = 65536;
+
+	// Ensure the buffer holds a complete line starting at pos (or the final
+	// unterminated line once eof is reached). Returns false at end of stream.
+	bool EnsureLineBuffered() {
+		SkipBOM();
+		while (true) {
+			auto term = buffer.find_first_of("\r\n", pos);
+			if (term != string::npos) {
+				// A '\r' as the last buffered byte may be the first half of a
+				// '\r\n' spanning a read boundary; decide after the next fill.
+				if (buffer[term] == '\r' && term + 1 == buffer.size() && !eof) {
+					Fill();
+					continue;
+				}
+				return true;
+			}
+			if (eof) {
+				return pos < buffer.size();
+			}
+			Fill();
+		}
+	}
+
+	// Skip a UTF-8 byte-order mark at the very start of the stream. Runs
+	// before the first line is parsed and never again.
+	void SkipBOM() {
+		while (!bom_checked) {
+			if (buffer.size() >= 3) {
+				if (buffer.compare(0, 3, "\xEF\xBB\xBF") == 0) {
+					pos = 3;
+				}
+				bom_checked = true;
+			} else if (eof) {
+				bom_checked = true;
+			} else {
+				Fill();
+			}
+		}
+	}
+
+	void Fill() {
+		if (eof) {
+			return;
+		}
+		// Compact consumed bytes so streaming reads don't accumulate the whole
+		// source. pos stays 0-based within the buffer; buffer_base keeps
+		// start offsets equal to true source offsets.
+		if (pos > 0) {
+			buffer.erase(0, pos);
+			buffer_base += static_cast<int64_t>(pos);
+			pos = 0;
+		}
+		char chunk[FILL_CHUNK_SIZE];
+		int64_t bytes_read = file.Read(chunk, FILL_CHUNK_SIZE);
+		if (bytes_read <= 0) {
+			eof = true;
+			return;
+		}
+		buffer.append(chunk, static_cast<size_t>(bytes_read));
+	}
+
+	FileHandle &file;
+	string buffer;
+	idx_t pos = 0;
+	int64_t buffer_base = 0;
+	bool eof = false;
+	bool bom_checked = false;
+};
+
+// Count total lines by scanning the stream through a reader (for resolving
+// from-end references on seekable sources; the caller rewinds afterwards).
+static int64_t CountLinesInStream(BufferedLineReader &reader) {
+	string line;
+	int64_t offset;
+	int64_t count = 0;
+	while (reader.NextLine(line, offset)) {
+		count++;
+	}
+	return count;
 }
 
 static bool OpenNextFile(ReadTextLinesGlobalState &state, const ReadTextLinesBindData &bind_data) {
@@ -202,31 +279,23 @@ static bool OpenNextFile(ReadTextLinesGlobalState &state, const ReadTextLinesBin
 			state.current_file = state.fs->OpenFile(file_info.path, FileFlags::FILE_FLAGS_READ);
 			state.current_file_path = file_info.path;
 			state.current_line_number = 0;
-			state.current_byte_offset = 0;
 			state.file_finished = false;
-			state.current_seekable = state.current_file->CanSeek();
-			state.slurp_buffer.clear();
-			state.slurp_pos = 0;
+			state.reader = make_uniq<BufferedLineReader>(*state.current_file);
 
-			if (!state.current_seekable) {
-				// Non-seekable source (pipe / virtual URI): buffer the whole
-				// stream so we can split lines deterministically and resolve
-				// from-end references without seeking.
-				state.slurp_buffer = SlurpStream(*state.current_file);
-				if (bind_data.line_selection.HasFromEndReferences()) {
-					int64_t total_lines = CountLinesInText(state.slurp_buffer);
-					state.resolved_selection = bind_data.line_selection;
-					state.resolved_selection.ResolveFromEnd(total_lines);
-				} else {
-					state.resolved_selection = bind_data.line_selection;
-				}
-				return true;
-			}
-
-			// Handle from-end references (e.g., +10 meaning 10th line from end)
 			if (bind_data.line_selection.HasFromEndReferences()) {
-				// Count lines first, then resolve
-				int64_t total_lines = CountLinesInFile(*state.current_file);
+				// From-end references (e.g. '+2' = 2nd line from the end) need
+				// the total line count before any line can be emitted.
+				int64_t total_lines;
+				if (state.current_file->CanSeek()) {
+					total_lines = CountLinesInStream(*state.reader);
+					state.current_file->Seek(0);
+					state.reader = make_uniq<BufferedLineReader>(*state.current_file);
+				} else {
+					// Pipes and streams cannot rewind after counting: buffer
+					// the whole stream and serve lines from the buffer.
+					state.reader->SlurpAll();
+					total_lines = state.reader->CountBufferedLines();
+				}
 				state.resolved_selection = bind_data.line_selection;
 				state.resolved_selection.ResolveFromEnd(total_lines);
 			} else {
@@ -257,73 +326,26 @@ static void ReadTextLinesFunction(ClientContext &context, TableFunctionInput &da
 			}
 		}
 
-		// Non-seekable sources are served from the buffered stream so blank
-		// lines mid-stream and a final line without a trailing newline are
-		// handled correctly (byte_offset is the position within the buffer).
-		if (!state.current_seekable) {
-			while (output_row < STANDARD_VECTOR_SIZE && !state.file_finished) {
-				if (state.slurp_pos >= state.slurp_buffer.size()) {
-					state.file_finished = true;
-					break;
-				}
-
-				auto line_start_offset = static_cast<int64_t>(state.slurp_pos);
-				string line = ExtractLine(state.slurp_buffer, state.slurp_pos);
-
-				state.current_line_number++;
-
-				if (!state.resolved_selection.ShouldIncludeLine(state.current_line_number)) {
-					if (state.resolved_selection.PastAllRanges(state.current_line_number)) {
-						state.file_finished = true;
-						break;
-					}
-					continue;
-				}
-
-				output.data[0].SetValue(output_row, Value::BIGINT(state.current_line_number));
-				output.data[1].SetValue(output_row, Value(line));
-				output.data[2].SetValue(output_row, Value::BIGINT(line_start_offset));
-				output.data[3].SetValue(output_row, Value(state.current_file_path));
-
-				output_row++;
-			}
-			continue;
-		}
-
 		while (output_row < STANDARD_VECTOR_SIZE && !state.file_finished) {
 			string line;
-			auto line_start_offset = state.current_byte_offset;
-
+			int64_t line_start_offset;
+			bool have_line;
 			try {
-				line = state.current_file->ReadLine();
-			} catch (...) {
+				have_line = state.reader->NextLine(line, line_start_offset);
+			} catch (std::exception &) {
+				// A genuine mid-read I/O error (EOF is a 0-byte read, not an
+				// exception). Skip the rest of the file only if asked to.
+				if (!bind_data.ignore_errors) {
+					throw;
+				}
+				have_line = false;
+			}
+			if (!have_line) {
 				state.file_finished = true;
 				break;
 			}
 
-			if (line.empty()) {
-				bool at_eof = true;
-				try {
-					auto current_pos = state.current_file->SeekPosition();
-					auto file_size = state.current_file->GetFileSize();
-					if (current_pos < file_size) {
-						at_eof = false;
-					}
-				} catch (const std::exception &) {
-					at_eof = true;
-				}
-				if (at_eof) {
-					state.file_finished = true;
-					break;
-				}
-			}
-
 			state.current_line_number++;
-			try {
-				state.current_byte_offset = state.current_file->SeekPosition();
-			} catch (const std::exception &) {
-				state.current_byte_offset = line_start_offset + static_cast<int64_t>(line.size()) + 1;
-			}
 
 			if (!state.resolved_selection.ShouldIncludeLine(state.current_line_number)) {
 				if (state.resolved_selection.PastAllRanges(state.current_line_number)) {
@@ -331,6 +353,18 @@ static void ReadTextLinesFunction(ClientContext &context, TableFunctionInput &da
 					break;
 				}
 				continue;
+			}
+
+			// VARCHAR requires valid UTF-8; a bad byte must not abort the whole
+			// scan when the user opted into ignore_errors (the line keeps its
+			// number so subsequent line numbers stay true to the file).
+			if (Utf8Proc::Analyze(line.c_str(), line.size()) == UnicodeType::INVALID) {
+				if (bind_data.ignore_errors) {
+					continue;
+				}
+				throw InvalidInputException(
+				    "read_lines: line %lld of \"%s\" is not valid UTF-8; set ignore_errors=true to skip such lines",
+				    state.current_line_number, state.current_file_path);
 			}
 
 			output.data[0].SetValue(output_row, Value::BIGINT(state.current_line_number));
@@ -386,25 +420,21 @@ struct ReadTextLinesLateralBindData : public TableFunctionData {
 struct ReadTextLinesLateralState : public LocalTableFunctionState {
 	FileSystem *fs;
 	unique_ptr<FileHandle> current_file;
+	// The InOut operator is re-entered (HAVE_MORE_OUTPUT) until the current
+	// source is exhausted, so the reader — and with it any buffered stream
+	// content and the parse position — must persist in operator state across
+	// re-invocations. Each correlated input row opens its own source and gets
+	// its own reader.
+	unique_ptr<BufferedLineReader> reader;
 	string current_file_path;
 	int64_t current_line_number;
-	int64_t current_byte_offset;
 	bool file_open;
 	idx_t current_row;
 	LineSelection resolved_selection; // Per-file resolved selection
 
-	// Non-seekable (pipe / stream) support. The InOut operator is re-entered
-	// (HAVE_MORE_OUTPUT) until the current source is exhausted, so the buffered
-	// stream and the parse position must persist in operator state across
-	// re-invocations. Each correlated input row runs its own command and gets
-	// its own buffer.
-	bool current_seekable;
-	string slurp_buffer;
-	idx_t slurp_pos;
-
 	ReadTextLinesLateralState()
-	    : fs(nullptr), current_line_number(0), current_byte_offset(0), file_open(false), current_row(0),
-	      resolved_selection(LineSelection::All()), current_seekable(true), slurp_pos(0) {
+	    : fs(nullptr), current_line_number(0), file_open(false), current_row(0),
+	      resolved_selection(LineSelection::All()) {
 	}
 };
 
@@ -501,34 +531,23 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 				state.current_file = state.fs->OpenFile(file_path, FileFlags::FILE_FLAGS_READ);
 				state.current_file_path = file_path;
 				state.current_line_number = 0;
-				state.current_byte_offset = 0;
 				state.file_open = true;
+				state.reader = make_uniq<BufferedLineReader>(*state.current_file);
 
-				// Probe seekability via CanSeek() (side-effect free; true for
-				// local files, false for pipes/streams) rather than perturbing
-				// the read position with SeekPosition().
-				state.current_seekable = state.current_file->CanSeek();
-				state.slurp_buffer.clear();
-				state.slurp_pos = 0;
-
-				if (!state.current_seekable) {
-					// Non-seekable source (e.g. a per-row shellfs pipe in a
-					// correlated lateral join): buffer the whole stream once so
-					// EOF is detected by a 0-byte read, blank lines mid-stream
-					// are preserved, and from-end references resolve. The buffer
-					// and parse position live in operator state so they survive
-					// the HAVE_MORE_OUTPUT re-invocations of this operator.
-					state.slurp_buffer = SlurpStream(*state.current_file);
-					if (bind_data.line_selection.HasFromEndReferences()) {
-						int64_t total_lines = CountLinesInText(state.slurp_buffer);
-						state.resolved_selection = bind_data.line_selection;
-						state.resolved_selection.ResolveFromEnd(total_lines);
+				if (bind_data.line_selection.HasFromEndReferences()) {
+					// From-end references need the total line count up front.
+					int64_t total_lines;
+					if (state.current_file->CanSeek()) {
+						total_lines = CountLinesInStream(*state.reader);
+						state.current_file->Seek(0);
+						state.reader = make_uniq<BufferedLineReader>(*state.current_file);
 					} else {
-						state.resolved_selection = bind_data.line_selection;
+						// Pipes (e.g. a per-row shellfs command) cannot rewind
+						// after counting: buffer the whole stream and serve
+						// lines from the buffer.
+						state.reader->SlurpAll();
+						total_lines = state.reader->CountBufferedLines();
 					}
-				} else if (bind_data.line_selection.HasFromEndReferences()) {
-					// Handle from-end references (e.g., +10 meaning 10th line from end)
-					int64_t total_lines = CountLinesInFile(*state.current_file);
 					state.resolved_selection = bind_data.line_selection;
 					state.resolved_selection.ResolveFromEnd(total_lines);
 				} else {
@@ -543,98 +562,55 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 			}
 		}
 
-		// Read lines from current source. Non-seekable sources are served from
-		// the buffered stream so blank lines mid-stream and a final line
-		// without a trailing newline survive, and so the parse position
-		// persists across this operator's HAVE_MORE_OUTPUT re-invocations.
-		if (!state.current_seekable) {
-			while (output_row < STANDARD_VECTOR_SIZE && state.file_open) {
-				if (state.slurp_pos >= state.slurp_buffer.size()) {
+		// Read lines from the current source. The reader persists in operator
+		// state, so the parse position survives this operator's
+		// HAVE_MORE_OUTPUT re-invocations.
+		while (output_row < STANDARD_VECTOR_SIZE && state.file_open) {
+			string line;
+			int64_t line_start_offset;
+			bool have_line;
+			try {
+				have_line = state.reader->NextLine(line, line_start_offset);
+			} catch (std::exception &) {
+				if (!bind_data.ignore_errors) {
+					throw;
+				}
+				have_line = false;
+			}
+			if (!have_line) {
+				state.file_open = false;
+				state.current_row++;
+				break;
+			}
+
+			state.current_line_number++;
+
+			// Check line selection
+			if (!state.resolved_selection.ShouldIncludeLine(state.current_line_number)) {
+				if (state.resolved_selection.PastAllRanges(state.current_line_number)) {
 					state.file_open = false;
 					state.current_row++;
 					break;
 				}
+				continue;
+			}
 
-				auto line_start_offset = static_cast<int64_t>(state.slurp_pos);
-				string line = ExtractLine(state.slurp_buffer, state.slurp_pos);
-
-				state.current_line_number++;
-
-				// Check line selection
-				if (!state.resolved_selection.ShouldIncludeLine(state.current_line_number)) {
-					if (state.resolved_selection.PastAllRanges(state.current_line_number)) {
-						state.file_open = false;
-						state.current_row++;
-						break;
-					}
+			// VARCHAR requires valid UTF-8; see ReadTextLinesFunction.
+			if (Utf8Proc::Analyze(line.c_str(), line.size()) == UnicodeType::INVALID) {
+				if (bind_data.ignore_errors) {
 					continue;
 				}
-
-				// Output the line
-				output.data[0].SetValue(output_row, Value::BIGINT(state.current_line_number));
-				output.data[1].SetValue(output_row, Value(line));
-				output.data[2].SetValue(output_row, Value::BIGINT(line_start_offset));
-				output.data[3].SetValue(output_row, Value(state.current_file_path));
-
-				output_row++;
+				throw InvalidInputException("read_lines_lateral: line %lld of \"%s\" is not valid UTF-8",
+				                            state.current_line_number, state.current_file_path);
 			}
-		} else {
-			while (output_row < STANDARD_VECTOR_SIZE && state.file_open) {
-				string line;
-				auto line_start_offset = state.current_byte_offset;
 
-				try {
-					line = state.current_file->ReadLine();
-				} catch (...) {
-					state.file_open = false;
-					state.current_row++;
-					break;
-				}
+			// Output the line
+			output.data[0].SetValue(output_row, Value::BIGINT(state.current_line_number));
+			output.data[1].SetValue(output_row, Value(line));
+			output.data[2].SetValue(output_row, Value::BIGINT(line_start_offset));
+			output.data[3].SetValue(output_row, Value(state.current_file_path));
 
-				// Check for EOF
-				if (line.empty()) {
-					bool at_eof = true;
-					try {
-						auto current_pos = state.current_file->SeekPosition();
-						auto file_size = state.current_file->GetFileSize();
-						if (current_pos < file_size) {
-							at_eof = false;
-						}
-					} catch (const std::exception &) {
-						at_eof = true;
-					}
-					if (at_eof) {
-						state.file_open = false;
-						state.current_row++;
-						break;
-					}
-				}
-
-				state.current_line_number++;
-				try {
-					state.current_byte_offset = state.current_file->SeekPosition();
-				} catch (const std::exception &) {
-					state.current_byte_offset = line_start_offset + static_cast<int64_t>(line.size()) + 1;
-				}
-
-				// Check line selection
-				if (!state.resolved_selection.ShouldIncludeLine(state.current_line_number)) {
-					if (state.resolved_selection.PastAllRanges(state.current_line_number)) {
-						state.file_open = false;
-						state.current_row++;
-						break;
-					}
-					continue;
-				}
-
-				// Output the line
-				output.data[0].SetValue(output_row, Value::BIGINT(state.current_line_number));
-				output.data[1].SetValue(output_row, Value(line));
-				output.data[2].SetValue(output_row, Value::BIGINT(line_start_offset));
-				output.data[3].SetValue(output_row, Value(state.current_file_path));
-
-				output_row++;
-			}
+			output_row++;
 		}
 
 		// If file closed and more rows, continue to next file
