@@ -14,18 +14,18 @@ concurrency:
 jobs:
   duckdb-stable-build:
     name: Build extension binaries
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.3
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.4
     with:
-      duckdb_version: v1.5.3
-      ci_tools_version: v1.5.3
+      duckdb_version: v1.5.4
+      ci_tools_version: v1.5.4
       extension_name: read_lines
 
   code-quality-check:
     name: Code Quality Check
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.5.3
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.5.4
     with:
-      duckdb_version: v1.5.3
-      ci_tools_version: v1.5.3
+      duckdb_version: v1.5.4
+      ci_tools_version: v1.5.4
       extension_name: read_lines
       format_checks: 'format;tidy'
 
@@ -43,13 +43,13 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: read_lines-v1.5.3-extension-linux_amd64
+          name: read_lines-v1.5.4-extension-linux_amd64
           path: /tmp/read_lines_artifact
 
-      - name: Install DuckDB CLI v1.5.3
+      - name: Install DuckDB CLI v1.5.4
         run: |
           curl -sSL -o /tmp/duckdb_cli.zip \
-            https://github.com/duckdb/duckdb/releases/download/v1.5.3/duckdb_cli-linux-amd64.zip
+            https://github.com/duckdb/duckdb/releases/download/v1.5.4/duckdb_cli-linux-amd64.zip
           unzip -o /tmp/duckdb_cli.zip -d /tmp/duckdb-cli
 
       - name: Run pipe smoke tests
