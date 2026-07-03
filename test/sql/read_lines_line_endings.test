@@ -173,3 +173,101 @@ statement error
 SELECT * FROM (VALUES ('test/data/invalid_utf8.txt')) v(p), read_lines_lateral(v.p) l;
 ----
 is not valid UTF-8
+
+# =============================================================================
+# trim argument (optional third positional; also named for read_lines and
+# parse_lines). A pure content transform: line numbers, byte offsets, and
+# selection are unaffected. Default (NULL/false) preserves content exactly.
+# fixture whitespace.txt: "  indented  \n" / "\tTabbed\t\r\n" / "plain\n"
+# =============================================================================
+
+# true = strip the terminator only (chomp)
+query II
+SELECT line_number, replace(replace(replace(replace(content, chr(13), '<CR>'), chr(10), '<LF>'), chr(9), '<TAB>'), ' ', '<SP>')
+FROM read_lines('test/data/whitespace.txt', NULL, true) ORDER BY line_number;
+----
+1	<SP><SP>indented<SP><SP>
+2	<TAB>Tabbed<TAB>
+3	plain
+
+# 'right' = terminator + trailing spaces/tabs
+query II
+SELECT line_number, replace(replace(replace(replace(content, chr(13), '<CR>'), chr(10), '<LF>'), chr(9), '<TAB>'), ' ', '<SP>')
+FROM read_lines('test/data/whitespace.txt', NULL, 'right') ORDER BY line_number;
+----
+1	<SP><SP>indented
+2	<TAB>Tabbed
+3	plain
+
+# 'left' = leading spaces/tabs only; terminator kept
+query II
+SELECT line_number, replace(replace(replace(replace(content, chr(13), '<CR>'), chr(10), '<LF>'), chr(9), '<TAB>'), ' ', '<SP>')
+FROM read_lines('test/data/whitespace.txt', NULL, 'left') ORDER BY line_number;
+----
+1	indented<SP><SP><LF>
+2	Tabbed<TAB><CR><LF>
+3	plain<LF>
+
+# 'both' = both sides (terminator gone)
+query II
+SELECT line_number, replace(replace(replace(replace(content, chr(13), '<CR>'), chr(10), '<LF>'), chr(9), '<TAB>'), ' ', '<SP>')
+FROM read_lines('test/data/whitespace.txt', NULL, 'both') ORDER BY line_number;
+----
+1	indented
+2	Tabbed
+3	plain
+
+# named form on read_lines
+query II
+SELECT line_number, replace(replace(content, chr(9), '<TAB>'), ' ', '<SP>')
+FROM read_lines('test/data/whitespace.txt', trim=true) ORDER BY line_number;
+----
+1	<SP><SP>indented<SP><SP>
+2	<TAB>Tabbed<TAB>
+3	plain
+
+# combined with a lines selection; byte_offset unaffected by trim
+query III
+SELECT line_number, replace(replace(content, chr(9), '<TAB>'), ' ', '<SP>'), byte_offset
+FROM read_lines('test/data/whitespace.txt', '2', 'both');
+----
+2	Tabbed	13
+
+# false and NULL preserve exactly (same as default)
+query I
+SELECT count(*) FROM read_lines('test/data/crlf.txt', NULL, false) WHERE content LIKE '%' || chr(10);
+----
+3
+
+# parse_lines named trim
+query II
+SELECT line_number, replace(content, ' ', '<SP>')
+FROM parse_lines('  a  ' || chr(10) || 'b' || chr(13), trim='both') ORDER BY line_number;
+----
+1	a
+2	b
+
+# lateral: positional trim with NULL lines placeholder
+query II
+SELECT l.line_number, replace(replace(l.content, chr(9), '<TAB>'), ' ', '<SP>')
+FROM (VALUES ('test/data/whitespace.txt')) v(p), read_lines_lateral(v.p, NULL, 'both') l
+ORDER BY l.line_number;
+----
+1	indented
+2	Tabbed
+3	plain
+
+# lateral: bare boolean trim with a lines selection
+query II
+SELECT l.line_number, replace(replace(l.content, chr(9), '<TAB>'), ' ', '<SP>')
+FROM (VALUES ('test/data/whitespace.txt')) v(p), read_lines_lateral(v.p, '1-2', true) l
+ORDER BY l.line_number;
+----
+1	<SP><SP>indented<SP><SP>
+2	<TAB>Tabbed<TAB>
+
+# invalid mode is a clear bind error
+statement error
+SELECT * FROM read_lines('test/data/simple.txt', NULL, 'sideways');
+----
+Invalid trim mode

@@ -2,6 +2,7 @@
 #include "line_selection.hpp"
 #include "duckdb_compat.hpp"
 #include "duckdb/function/table_function.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 
 namespace duckdb {
@@ -9,9 +10,10 @@ namespace duckdb {
 struct ParseTextLinesBindData : public TableFunctionData {
 	string text;
 	LineSelection line_selection;
+	LineTrimMode trim_mode;
 
-	ParseTextLinesBindData(string text, LineSelection selection)
-	    : text(std::move(text)), line_selection(std::move(selection)) {
+	ParseTextLinesBindData(string text, LineSelection selection, LineTrimMode trim_mode)
+	    : text(std::move(text)), line_selection(std::move(selection)), trim_mode(trim_mode) {
 	}
 };
 
@@ -38,6 +40,7 @@ static unique_ptr<FunctionData> ParseTextLinesBind(ClientContext &context, Table
 
 	// Parse named parameters
 	LineSelection line_selection = LineSelection::All();
+	LineTrimMode trim_mode = LineTrimMode::NONE;
 	int64_t before_context = 0;
 	int64_t after_context = 0;
 
@@ -47,6 +50,8 @@ static unique_ptr<FunctionData> ParseTextLinesBind(ClientContext &context, Table
 
 		if (name == "lines") {
 			line_selection = LineSelection::Parse(value);
+		} else if (name == "trim") {
+			trim_mode = ParseLineTrimMode(value);
 		} else if (name == "before") {
 			before_context = value.GetValue<int64_t>();
 		} else if (name == "after") {
@@ -72,7 +77,7 @@ static unique_ptr<FunctionData> ParseTextLinesBind(ClientContext &context, Table
 	return_types.push_back(LogicalType::BIGINT); // byte_offset
 	names.push_back("byte_offset");
 
-	return make_uniq<ParseTextLinesBindData>(std::move(text), std::move(line_selection));
+	return make_uniq<ParseTextLinesBindData>(std::move(text), std::move(line_selection), trim_mode);
 }
 
 static unique_ptr<GlobalTableFunctionState> ParseTextLinesInit(ClientContext &context, TableFunctionInitInput &input) {
@@ -140,6 +145,69 @@ string ExtractLine(const string &text, idx_t &position) {
 	return text.substr(start, end - start);
 }
 
+LineTrimMode ParseLineTrimMode(const Value &value) {
+	if (value.IsNull()) {
+		return LineTrimMode::NONE;
+	}
+	if (value.type().id() == LogicalTypeId::BOOLEAN) {
+		return value.GetValue<bool>() ? LineTrimMode::ENDINGS : LineTrimMode::NONE;
+	}
+	auto str = StringUtil::Lower(value.GetValue<string>());
+	if (str == "none" || str == "false") {
+		return LineTrimMode::NONE;
+	}
+	if (str == "endings" || str == "true") {
+		return LineTrimMode::ENDINGS;
+	}
+	if (str == "left") {
+		return LineTrimMode::LEFT;
+	}
+	if (str == "right") {
+		return LineTrimMode::RIGHT;
+	}
+	if (str == "both") {
+		return LineTrimMode::BOTH;
+	}
+	throw InvalidInputException(
+	    "Invalid trim mode \"%s\": expected true/false, NULL, 'endings', 'left', 'right', 'both', or 'none'", str);
+}
+
+// Spaces and tabs only; terminator bytes are handled separately so 'left' can
+// trim indentation while keeping the line ending.
+static bool IsHorizontalWhitespace(char c) {
+	return c == ' ' || c == '\t';
+}
+
+string ApplyLineTrim(const string &line, LineTrimMode mode) {
+	if (mode == LineTrimMode::NONE || line.empty()) {
+		return line;
+	}
+	idx_t begin = 0;
+	idx_t end = line.size();
+	if (mode != LineTrimMode::LEFT) {
+		// Strip the single trailing terminator (\n, \r\n, or \r)
+		if (line[end - 1] == '\n') {
+			end--;
+			if (end > 0 && line[end - 1] == '\r') {
+				end--;
+			}
+		} else if (line[end - 1] == '\r') {
+			end--;
+		}
+	}
+	if (mode == LineTrimMode::RIGHT || mode == LineTrimMode::BOTH) {
+		while (end > begin && IsHorizontalWhitespace(line[end - 1])) {
+			end--;
+		}
+	}
+	if (mode == LineTrimMode::LEFT || mode == LineTrimMode::BOTH) {
+		while (begin < end && IsHorizontalWhitespace(line[begin])) {
+			begin++;
+		}
+	}
+	return line.substr(begin, end - begin);
+}
+
 static void ParseTextLinesFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
 	auto &bind_data = data_p.bind_data->Cast<ParseTextLinesBindData>();
 	auto &state = data_p.global_state->Cast<ParseTextLinesGlobalState>();
@@ -183,7 +251,7 @@ static void ParseTextLinesFunction(ClientContext &context, TableFunctionInput &d
 
 		// Output this line
 		output.data[0].SetValue(output_row, Value::BIGINT(state.current_line_number));
-		output.data[1].SetValue(output_row, Value(line));
+		output.data[1].SetValue(output_row, Value(ApplyLineTrim(line, bind_data.trim_mode)));
 		output.data[2].SetValue(output_row, Value::BIGINT(line_start_offset));
 
 		output_row++;
@@ -202,6 +270,7 @@ TableFunction ParseLinesFunction() {
 
 	// Named parameters
 	func.named_parameters["lines"] = LogicalType::ANY; // Can be int, string, or list
+	func.named_parameters["trim"] = LogicalType::ANY;  // BOOLEAN or 'endings'/'left'/'right'/'both'/'none'
 	func.named_parameters["before"] = LogicalType::BIGINT;
 	func.named_parameters["after"] = LogicalType::BIGINT;
 	func.named_parameters["context"] = LogicalType::BIGINT;

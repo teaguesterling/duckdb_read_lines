@@ -28,7 +28,8 @@ SELECT * FROM read_lines('app.log', lines := '100-200', context := 3);
 |----------|-------------|
 | `read_lines(path)` | Read all lines from file(s), supports glob patterns |
 | `read_lines(path, lines)` | Read selected lines (positional lines argument) |
-| `read_lines_lateral(path)` | Lateral join variant for per-row file paths |
+| `read_lines(path, lines, trim)` | ... with content trimming (pass `NULL` for `lines` to keep all) |
+| `read_lines_lateral(path[, lines[, trim]])` | Lateral join variant for per-row file paths |
 | `parse_lines(text, ...)` | Parse lines from a string value |
 
 ### Output Columns
@@ -137,10 +138,35 @@ lines := [{line: 5}, {start: 10, stop: 20}, {lines: [30, 40]}]
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `lines` | ANY | Line selection (see above) |
+| `trim` | ANY | Content trimming (see below); also the optional third positional argument |
 | `before` | BIGINT | Context lines before each selection |
 | `after` | BIGINT | Context lines after each selection |
 | `context` | BIGINT | Symmetric context (sets both before and after) |
 | `ignore_errors` | BOOL | Skip unreadable files in glob patterns and lines that are not valid UTF-8 (skipped lines keep their line number) |
+
+### Trimming
+
+By default `content` preserves each line exactly, including its terminator.
+The `trim` argument (third positional in `read_lines` / `read_lines_lateral`,
+named in `read_lines` / `parse_lines`) transforms content only — line numbers,
+byte offsets, and line selection always operate on the raw bytes, and a line
+that trims to empty still appears.
+
+| Value | Effect |
+|-------|--------|
+| `NULL` / `false` / `'none'` | Preserve exactly (default) |
+| `true` / `'endings'` | Strip the line terminator only |
+| `'right'` | Strip the terminator and trailing spaces/tabs |
+| `'left'` | Strip leading spaces/tabs; terminator kept |
+| `'both'` | `'left'` + `'right'` |
+
+```sql
+-- Clean lines for exact comparison
+SELECT * FROM read_lines('server.log', NULL, true) WHERE content = 'ERROR';
+
+-- Ignore indentation and trailing whitespace
+SELECT * FROM read_lines('config.yaml', trim='both');
+```
 
 ## Examples
 
@@ -214,8 +240,9 @@ FROM my_table t,
 - **Range bounds**: Inclusive on both ends
 - **Line endings**: `\n`, `\r\n`, and lone `\r` are all separators, and each
   line's terminator is preserved in `content` (the final line keeps its lack
-  of one). A trailing terminator-final empty line is a real line: `"a\n\n"`
-  is 2 lines, matching `wc -l` and `parse_lines`.
+  of one) unless the `trim` argument says otherwise. A trailing
+  terminator-final empty line is a real line: `"a\n\n"` is 2 lines, matching
+  `wc -l` and `parse_lines`.
 - **Line counting**: `read_lines`, `read_lines_lateral`, and `parse_lines`
   split identical bytes identically, whether the source is a file or a pipe
 - **Byte offsets**: True source offsets of each line's first content byte

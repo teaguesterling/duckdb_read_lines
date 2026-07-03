@@ -33,4 +33,26 @@ int64_t CountLinesInText(const string &text, idx_t start = 0);
 // line content (with the terminator preserved). Returns "" when at the end.
 string ExtractLine(const string &text, idx_t &position);
 
+// =============================================================================
+// Content trimming (the `trim` argument of read_lines / read_lines_lateral /
+// parse_lines). A pure content transform applied after splitting: line
+// numbers, byte offsets, line counting, and selection always operate on the
+// raw bytes, so `trim` never changes which rows appear or where they start.
+// =============================================================================
+
+enum class LineTrimMode : uint8_t {
+	NONE,    // NULL / false / 'none': preserve exactly (default)
+	ENDINGS, // true / 'endings': strip the line terminator only (chomp)
+	LEFT,    // 'left': strip leading spaces/tabs; terminator kept
+	RIGHT,   // 'right': strip the terminator and trailing spaces/tabs
+	BOTH     // 'both': LEFT + RIGHT
+};
+
+// Parse a trim argument (BOOLEAN, NULL, or one of the strings above);
+// throws InvalidInputException on anything else.
+LineTrimMode ParseLineTrimMode(const Value &value);
+
+// Apply a trim mode to one split line (whose content includes its terminator).
+string ApplyLineTrim(const string &line, LineTrimMode mode);
+
 } // namespace duckdb
