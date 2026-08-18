@@ -79,6 +79,61 @@ read_lines('file.py:+10-+5')       -- from 10th-last to 5th-last
 
 If a file literally named `file.py:42` exists, it takes precedence.
 
+### URI-Safe Path-Embedded Selection
+
+`:` is the URI scheme separator, so the colon form above is not usable on a VFS
+path (`git://...`, `s3://...`, `zim:...`). The URI fragment is: RFC 3986 3.5
+defines it as separated from the rest of the URI *before* dereferencing, so a
+filesystem never sees it -- and `#L10-L20` is the line anchor GitHub and GitLab
+already put in the address bar.
+
+```sql
+read_lines('git://docs/SCHEMAS.md@HEAD#L11-L12')  -- lines 11-12 of the file at HEAD
+read_lines('file.py#L42')                         -- line 42
+read_lines('file.py#L12-24')                      -- lines 12-24
+read_lines('file.py#L100-')                       -- from line 100 to end
+read_lines('file.py#L42+/-3')                     -- line 42 with 3 lines context
+```
+
+`#L` (also `#l`) is only a delimiter: what follows is the same line spec grammar
+as above. An `L` in front of any number is tolerated and dropped, so GitHub's
+`#L123-L456` is simply the range `123-456`. A bare `#12-24` is *not* a line
+spec -- the `L` is what marks a fragment as a line reference rather than some
+other tool's anchor.
+
+The [SWHID](https://www.swhid.org/specification/v1.1/6.Qualified_identifiers/)
+`lines` qualifier is accepted for the same reason -- it is a named qualifier of
+a qualified identifier, not part of the object it identifies:
+
+```sql
+read_lines('file.py;lines=10-20')
+read_lines('file.py;lines=42')
+read_lines('swh:1:cnt:94a9ed02...;origin=https://example.org;lines=11-12')
+```
+
+Qualifiers may appear in any order: only `;lines=` is removed, every other
+qualifier is left in place for whatever resolves the identifier. The same one
+grammar applies behind the `=`. Note that only the *syntax* is supported --
+resolving `swh:` identifiers against the Software Heritage archive is a
+different feature and is not implemented, so such a path fails as an
+unresolvable path, never because of its line spec.
+
+Rules:
+
+- The literal path is always tried first, so a file really named
+  `weird#name.txt` still reads as that file.
+- Per RFC 3986 the fragment starts at the *first* `#`, and a query string
+  (`?...`) comes before it and stays part of the locator, since a filesystem may
+  need it (presigned URLs, VFS options). A `;lines=` inside a query string is a
+  query parameter and is left alone.
+- Naming the lines twice is an error, never a silent choice: `#L...` or
+  `;lines=...` together with a `lines` argument, with each other, or with a
+  `:N-M` suffix, is rejected.
+- Some filesystems parse the path themselves and *throw* on a decorated path
+  instead of reporting no match. The line spec is still applied in that case;
+  if no interpretation of the path resolves, that filesystem's own error is
+  reported unchanged.
+
 ### Lines Parameter
 
 The `lines` parameter accepts integers, strings, or structs:

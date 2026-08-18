@@ -9,6 +9,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 #include "utf8proc_wrapper.hpp"
+#include <exception>
 
 namespace duckdb {
 
@@ -53,23 +54,69 @@ static unique_ptr<FunctionData> ReadTextLinesBind(ClientContext &context, TableF
 	auto &fs = FileSystem::GetFileSystem(context);
 	auto input_path = input.inputs[0].GetValue<string>();
 
-	// Try the original path first - if it exists or matches files, use it as-is
-	// This handles cases where filenames contain colons (e.g., "file:2.txt")
-	auto files = compat::GlobFilesCompat(fs, input_path, context, FileGlobOptions::ALLOW_EMPTY);
+	// Try the original path first - if it exists or matches files, use it as-is.
+	// This keeps the rule monotone: any path that resolved before still resolves,
+	// so a file whose name genuinely contains ':' ("file:2.txt") or '#'
+	// ("weird#name.txt") always wins over a decorated interpretation of it.
+	//
+	// Not every filesystem answers "nothing matches" with an empty list: a VFS
+	// that parses the path itself (duck_tails' git:// resolves the revision in
+	// Glob, for one) throws instead, because a decorated path is not a path it
+	// can parse. That must not make the line spec unreachable, so remember the
+	// error and only surface it if no interpretation of the path resolves - the
+	// unchanged error is what a path with no line spec still gets.
+	vector<OpenFileInfo> files;
+	std::exception_ptr literal_path_error;
+	try {
+		files = compat::GlobFilesCompat(fs, input_path, context, FileGlobOptions::ALLOW_EMPTY);
+	} catch (std::exception &) {
+		literal_path_error = std::current_exception();
+	}
 
 	string glob_pattern = input_path;
 	LineSelection path_line_selection = LineSelection::All();
+	LineSpecSource path_spec_source = LineSpecSource::NONE;
 
 	if (files.empty()) {
-		// No files found with original path - try parsing for embedded line spec
-		auto parsed_result = LineSelection::ParsePathWithLineSpec(input_path);
-		if (parsed_result.first != input_path) {
+		// No files found with the original path - try parsing an embedded line spec
+		auto parsed_result = ParsePathLineSpec(input_path);
+		if (parsed_result.source != LineSpecSource::NONE) {
 			// Path was parsed differently, try globbing with the extracted path
-			files = compat::GlobFilesCompat(fs, parsed_result.first, context, FileGlobOptions::ALLOW_EMPTY);
+			files = compat::GlobFilesCompat(fs, parsed_result.path, context, FileGlobOptions::ALLOW_EMPTY);
 			if (!files.empty()) {
-				glob_pattern = parsed_result.first;
-				path_line_selection = std::move(parsed_result.second);
+				glob_pattern = parsed_result.path;
+				path_line_selection = std::move(parsed_result.selection);
+				path_spec_source = parsed_result.source;
+			} else if (parsed_result.source != LineSpecSource::COLON) {
+				// The locator still does not resolve. If the leftover locator also
+				// carries a legacy ':' spec that *does* resolve, the path names its
+				// lines twice - report that instead of silently picking one. The
+				// ':' interpretation must really resolve before we call it a spec,
+				// otherwise a URI port ("host:8080/f.txt") would look like one.
+				auto colon_result = LineSelection::ParsePathWithLineSpec(parsed_result.path);
+				if (colon_result.first != parsed_result.path) {
+					bool colon_resolves = false;
+					try {
+						colon_resolves =
+						    !compat::GlobFilesCompat(fs, colon_result.first, context, FileGlobOptions::ALLOW_EMPTY)
+						         .empty();
+					} catch (...) { // NOLINT: a filesystem that cannot glob simply is not a conflict
+						colon_resolves = false;
+					}
+					if (colon_resolves) {
+						throw InvalidInputException(
+						    "read_lines: path \"%s\" carries both a %s line spec and a %s line spec; use only one",
+						    input_path, LineSpecSourceName(parsed_result.source),
+						    LineSpecSourceName(LineSpecSource::COLON));
+					}
+				}
 			}
+		}
+
+		if (files.empty() && literal_path_error) {
+			// Nothing resolved: the path is simply broken, so report exactly the
+			// error the filesystem gave for it.
+			std::rethrow_exception(literal_path_error);
 		}
 	}
 
@@ -110,6 +157,15 @@ static unique_ptr<FunctionData> ReadTextLinesBind(ClientContext &context, TableF
 		} else if (name == "ignore_errors") {
 			ignore_errors = value.GetValue<bool>();
 		}
+	}
+
+	// A URI-form spec plus an explicit 'lines' argument names the lines twice:
+	// reject it rather than silently picking one. The legacy ':' form keeps its
+	// documented behaviour (the explicit argument wins) for back-compatibility.
+	if (has_explicit_lines && path_spec_source != LineSpecSource::NONE && path_spec_source != LineSpecSource::COLON) {
+		throw InvalidInputException(
+		    "read_lines: path \"%s\" carries a %s line spec and a 'lines' argument was also given; use only one",
+		    input_path, LineSpecSourceName(path_spec_source));
 	}
 
 	// If no explicit lines param, use path-embedded selection
