@@ -127,6 +127,14 @@ FROM read_lines('test/data/simple.txt#l3');
 ----
 3	line three
 
+# A fragment applies to every file a glob pattern matches
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/log*.txt#L1') ORDER BY file_path;
+----
+1	2024-01-01 INFO Starting
+1	2024-01-02 INFO Server started
+
 # =============================================================================
 # Fragments that are not line specs must not be treated as one
 # =============================================================================
@@ -273,6 +281,12 @@ No files found that match the pattern
 # Fragment + explicit lines argument
 statement error
 SELECT * FROM read_lines('test/data/simple.txt#L2', lines := 3);
+----
+line spec
+
+# ... the positional spelling of the same argument is rejected as well
+statement error
+SELECT * FROM read_lines('test/data/simple.txt#L2', '3');
 ----
 line spec
 
