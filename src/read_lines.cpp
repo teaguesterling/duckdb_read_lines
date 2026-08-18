@@ -9,6 +9,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 #include "utf8proc_wrapper.hpp"
+#include <exception>
 
 namespace duckdb {
 
@@ -57,7 +58,20 @@ static unique_ptr<FunctionData> ReadTextLinesBind(ClientContext &context, TableF
 	// This keeps the rule monotone: any path that resolved before still resolves,
 	// so a file whose name genuinely contains ':' ("file:2.txt") or '#'
 	// ("weird#name.txt") always wins over a decorated interpretation of it.
-	auto files = compat::GlobFilesCompat(fs, input_path, context, FileGlobOptions::ALLOW_EMPTY);
+	//
+	// Not every filesystem answers "nothing matches" with an empty list: a VFS
+	// that parses the path itself (duck_tails' git:// resolves the revision in
+	// Glob, for one) throws instead, because a decorated path is not a path it
+	// can parse. That must not make the line spec unreachable, so remember the
+	// error and only surface it if no interpretation of the path resolves - the
+	// unchanged error is what a path with no line spec still gets.
+	vector<OpenFileInfo> files;
+	std::exception_ptr literal_path_error;
+	try {
+		files = compat::GlobFilesCompat(fs, input_path, context, FileGlobOptions::ALLOW_EMPTY);
+	} catch (std::exception &) {
+		literal_path_error = std::current_exception();
+	}
 
 	string glob_pattern = input_path;
 	LineSelection path_line_selection = LineSelection::All();
@@ -97,6 +111,12 @@ static unique_ptr<FunctionData> ReadTextLinesBind(ClientContext &context, TableF
 					}
 				}
 			}
+		}
+
+		if (files.empty() && literal_path_error) {
+			// Nothing resolved: the path is simply broken, so report exactly the
+			// error the filesystem gave for it.
+			std::rethrow_exception(literal_path_error);
 		}
 	}
 

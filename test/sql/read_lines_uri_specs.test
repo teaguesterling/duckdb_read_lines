@@ -313,3 +313,22 @@ statement error
 SELECT * FROM read_lines('test/data/simple.txt:2#L3');
 ----
 line spec
+
+# =============================================================================
+# Filesystems that throw instead of returning "no match"
+# =============================================================================
+
+# A VFS that parses the path itself (duck_tails' git:// resolves the revision
+# inside Glob) throws on a decorated path rather than returning an empty list.
+# That must not make the line spec unreachable - but when no interpretation of
+# the path resolves either, the filesystem's own error is what must surface.
+statement ok
+SET autoinstall_known_extensions=false;
+
+statement ok
+SET autoload_known_extensions=false;
+
+statement error
+SELECT * FROM read_lines('s3://bucket/f.txt#L2');
+----
+requires the extension httpfs

@@ -129,6 +129,10 @@ Rules:
 - Naming the lines twice is an error, never a silent choice: `#L...` or
   `;lines=...` together with a `lines` argument, with each other, or with a
   `:N-M` suffix, is rejected.
+- Some filesystems parse the path themselves and *throw* on a decorated path
+  instead of reporting no match. The line spec is still applied in that case;
+  if no interpretation of the path resolves, that filesystem's own error is
+  reported unchanged.
 
 ### Lines Parameter
 
