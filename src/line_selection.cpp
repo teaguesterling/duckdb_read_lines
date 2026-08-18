@@ -921,6 +921,15 @@ ParsedPathSpec ParsePathLineSpec(const string &path) {
 	string base = hash_pos == string::npos ? path : path.substr(0, hash_pos);
 	string fragment_suffix = hash_pos == string::npos ? string() : path.substr(hash_pos);
 
+	// RFC 3986 3.4: the query comes *before* the fragment and, unlike the
+	// fragment, it is part of what the filesystem resolves (presigned URLs, VFS
+	// options), so it stays on the locator. It is split off here only so that a
+	// ';lines=' inside a query string - where it means a query parameter, not a
+	// SWHID qualifier - is not mistaken for a line spec.
+	size_t query_pos = base.find('?');
+	string hierarchical = query_pos == string::npos ? base : base.substr(0, query_pos);
+	string query_suffix = query_pos == string::npos ? string() : base.substr(query_pos);
+
 	string normalized;
 	LineSelection fragment_selection = LineSelection::All();
 	bool has_fragment = hash_pos != string::npos && NormalizeFragmentSpec(path.substr(hash_pos + 1), normalized) &&
@@ -932,7 +941,7 @@ ParsedPathSpec ParsePathLineSpec(const string &path) {
 	bool qualifier_duplicated = false;
 	LineSelection qualifier_selection = LineSelection::All();
 	bool has_qualifier =
-	    FindLinesQualifier(base, qualifier_start, qualifier_length, qualifier_value, qualifier_duplicated) &&
+	    FindLinesQualifier(hierarchical, qualifier_start, qualifier_length, qualifier_value, qualifier_duplicated) &&
 	    TryParseLineSpecString(NormalizeLineSpecBody(qualifier_value), qualifier_selection);
 
 	// Naming the lines twice is an error, never a silent choice.
@@ -950,8 +959,9 @@ ParsedPathSpec ParsePathLineSpec(const string &path) {
 		return ParsedPathSpec {base, std::move(fragment_selection), LineSpecSource::FRAGMENT};
 	}
 	if (has_qualifier) {
-		string locator = base.substr(0, qualifier_start) + base.substr(qualifier_start + qualifier_length);
-		return ParsedPathSpec {locator + fragment_suffix, std::move(qualifier_selection), LineSpecSource::QUALIFIER};
+		string locator = hierarchical.substr(0, qualifier_start) +
+		                 hierarchical.substr(qualifier_start + qualifier_length) + query_suffix + fragment_suffix;
+		return ParsedPathSpec {locator, std::move(qualifier_selection), LineSpecSource::QUALIFIER};
 	}
 
 	auto legacy = LineSelection::ParsePathWithLineSpec(path);

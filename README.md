@@ -123,7 +123,9 @@ Rules:
 - The literal path is always tried first, so a file really named
   `weird#name.txt` still reads as that file.
 - Per RFC 3986 the fragment starts at the *first* `#`, and a query string
-  (`?...`) stays part of the locator, since a filesystem may need it.
+  (`?...`) comes before it and stays part of the locator, since a filesystem may
+  need it (presigned URLs, VFS options). A `;lines=` inside a query string is a
+  query parameter and is left alone.
 - Naming the lines twice is an error, never a silent choice: `#L...` or
   `;lines=...` together with a `lines` argument, with each other, or with a
   `:N-M` suffix, is rejected.

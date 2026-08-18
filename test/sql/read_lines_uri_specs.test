@@ -242,6 +242,31 @@ SELECT * FROM read_lines('swh:1:cnt:94a9ed024d3859793618152ea559a168bbcbb5e2;ori
 No files found that match the pattern
 
 # =============================================================================
+# RFC 3986 component order: '?query' precedes '#fragment'
+# =============================================================================
+
+# The query is part of what the filesystem resolves (presigned URLs, VFS
+# options) and must stay on the locator - so this must NOT read line 2 of
+# test/data/simple.txt, it must fail to find 'test/data/simple.txt?x=1'
+statement error
+SELECT * FROM read_lines('test/data/simple.txt?x=1#L2');
+----
+No files found that match the pattern
+
+# ';lines=' is a path qualifier and must not be harvested out of a query string
+statement error
+SELECT * FROM read_lines('test/data/simple.txt?a=1;lines=2');
+----
+No files found that match the pattern
+
+# The fragment starts at the FIRST '#' (RFC 3986: a '#' may not appear
+# unescaped inside a query), so 'name.txt#L2' is a fragment, not a spec
+statement error
+SELECT * FROM read_lines('test/data/hash#name.txt#L2');
+----
+No files found that match the pattern
+
+# =============================================================================
 # Conflicting line specs are rejected, never silently resolved
 # =============================================================================
 
