@@ -1,0 +1,213 @@
+# name: test/sql/read_lines_uri_specs.test
+# description: URI-safe line specs - '#L...' fragment and ';lines=...' qualifier
+# group: [sql]
+
+require read_lines
+
+# =============================================================================
+# URI fragment form: path#L<spec>
+#
+# RFC 3986 3.5: the fragment is separated from the rest of the URI *before* the
+# URI is dereferenced, so a downstream filesystem never sees it. That is what
+# makes '#' safe as a line-spec delimiter where ':' (the scheme separator) is
+# not.
+# =============================================================================
+
+# GitHub/GitLab single-line form
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt#L3');
+----
+3	line three
+
+# GitHub/GitLab range form: both ends carry the L
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt#L2-L4');
+----
+2	line two
+3	line three
+4	line four
+
+# Short range form: '#L' is only a delimiter, the rest is the existing grammar
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt#L2-4');
+----
+2	line two
+3	line three
+4	line four
+
+# Tail form
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt#L4-');
+----
+4	line four
+5	line five
+
+# Head form
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt#L-2');
+----
+1	line one
+2	line two
+
+# Ellipsis range
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt#L2...4');
+----
+2	line two
+3	line three
+4	line four
+
+# Ellipsis range, GitHub-style L on both ends
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt#L2...L4');
+----
+2	line two
+3	line three
+4	line four
+
+# From-end single line
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt#L+2');
+----
+4	line four
+
+# Last N lines
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt#L+2-');
+----
+4	line four
+5	line five
+
+# Symmetric context, attached (no space is legal inside a URI fragment)
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt#L3+/-1');
+----
+2	line two
+3	line three
+4	line four
+
+# Symmetric context, spaced (same spelling the ':' form accepts)
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt#L3 +/-1');
+----
+2	line two
+3	line three
+4	line four
+
+# Asymmetric context
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt#L3 -1 +1');
+----
+2	line two
+3	line three
+4	line four
+
+# A range past EOF simply selects nothing
+query I
+SELECT count(*) FROM read_lines('test/data/simple.txt#L100-');
+----
+0
+
+# Lowercase 'l' is accepted too
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt#l3');
+----
+3	line three
+
+# =============================================================================
+# Fragments that are not line specs must not be treated as one
+# =============================================================================
+
+# A word fragment is not a line spec: the path is used verbatim and fails loudly
+statement error
+SELECT * FROM read_lines('test/data/simple.txt#License');
+----
+No files found that match the pattern
+
+# '#L' with nothing behind it is not a line spec
+statement error
+SELECT * FROM read_lines('test/data/simple.txt#L');
+----
+No files found that match the pattern
+
+# Garbage behind the L is not a line spec (it must not silently become line 2)
+statement error
+SELECT * FROM read_lines('test/data/simple.txt#L2ice');
+----
+No files found that match the pattern
+
+# A bare '#12-24' is not a line spec: the 'L' introducer is what makes a
+# fragment unambiguously a line reference rather than some other tool's anchor
+statement error
+SELECT * FROM read_lines('test/data/simple.txt#12-24');
+----
+No files found that match the pattern
+
+# =============================================================================
+# Monotonicity: anything that resolved before still resolves
+# =============================================================================
+
+# A real file with '#' in its name still reads as a file
+query I
+SELECT count(*) FROM read_lines('test/data/hash#name.txt');
+----
+3
+
+# A real file whose name looks exactly like a fragment spec wins over the
+# fragment interpretation: all 5 lines, not line 2 of 'test/data/frag'
+query I
+SELECT count(*) FROM read_lines('test/data/frag#L2.txt');
+----
+5
+
+# ... and it can still be combined with an explicit lines argument
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/frag#L2.txt', lines := 3);
+----
+3	frag three
+
+# The legacy ':' form is unchanged
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt:2-4');
+----
+2	line two
+3	line three
+4	line four
+
+# ... including the legacy precedence of an explicit lines argument over ':'
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt:3', lines := 1);
+----
+1	line one
+
+# =============================================================================
+# Conflicting line specs are rejected, never silently resolved
+# =============================================================================
+
+# Fragment + explicit lines argument
+statement error
+SELECT * FROM read_lines('test/data/simple.txt#L2', lines := 3);
+----
+line spec
+
+# Legacy ':' + fragment, where both interpretations really resolve
+statement error
+SELECT * FROM read_lines('test/data/simple.txt:2#L3');
+----
+line spec

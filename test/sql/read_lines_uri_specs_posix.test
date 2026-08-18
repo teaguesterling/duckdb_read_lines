@@ -1,0 +1,32 @@
+# name: test/sql/read_lines_uri_specs_posix.test
+# description: URI-safe line specs on paths that contain ':' (POSIX-only file names)
+# group: [sql]
+
+require read_lines
+
+# ':' is not a legal file name character on Windows, so the colon-bearing paths
+# below can only be materialised on POSIX platforms. The parsing they exercise
+# is platform-independent.
+require notwindows
+
+# A locator that is shaped like a VFS URI ("scheme:opaque@ref"). This is the
+# case from issue #8: the ':' line-spec suffix cannot be used here without
+# guessing which colon is the scheme separator, while the '#L' fragment is
+# separable by definition.
+statement ok
+COPY (SELECT unnest(['alpha', 'beta', 'gamma', 'delta', 'epsilon']) AS l)
+TO '__TEST_DIR__/vcs:SCHEMAS.md@HEAD' (FORMAT csv, HEADER false);
+
+# No spec: reads the whole file (this already worked)
+query I
+SELECT count(*) FROM read_lines('__TEST_DIR__/vcs:SCHEMAS.md@HEAD');
+----
+5
+
+# Fragment spec on the same colon-bearing locator
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('__TEST_DIR__/vcs:SCHEMAS.md@HEAD#L2-L3');
+----
+2	beta
+3	gamma

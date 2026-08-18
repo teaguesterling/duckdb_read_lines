@@ -745,4 +745,159 @@ std::pair<string, LineSelection> LineSelection::ParsePathWithLineSpec(const stri
 	}
 }
 
+// =============================================================================
+// URI-safe line spec forms
+//
+// ':' cannot be a line-spec delimiter on a URI: it is the scheme separator, so
+// any rule that splits on it has to guess which colon it found, and a wrong
+// guess reads the wrong bytes silently. The fragment form is separable by
+// definition instead of by heuristic - RFC 3986 3.5: "the fragment identifier
+// is not used in the scheme-specific processing of a URI; instead, the fragment
+// identifier is separated from the rest of the URI prior to a dereference".
+// A downstream filesystem therefore never sees it, and "#L10-L20" is the line
+// anchor GitHub and GitLab already put in the address bar.
+//
+// These forms are only consulted after the literal path has failed to resolve
+// (see ReadTextLinesBind), which keeps the rule monotone: a file whose name
+// really contains '#' still wins over any decorated interpretation of it.
+// =============================================================================
+
+// A line spec may only contain digits, the range/sign characters, and spaces.
+// '/' is legal only inside the symmetric context markers "+/-" and "-/+", '.'
+// only inside the "..." range separator. Anything else - a letter, '%', '#', a
+// path separator - means "this is not a line spec", and the path is then left
+// alone rather than risking a silent wrong read. This is deliberately stricter
+// than the range parser itself, which accepts trailing garbage via std::stoll.
+static bool IsLineSpecCharset(const string &spec) {
+	bool has_digit = false;
+	for (size_t i = 0; i < spec.size(); i++) {
+		char c = spec[i];
+		if (std::isdigit(static_cast<unsigned char>(c))) {
+			has_digit = true;
+			continue;
+		}
+		if (c == '+' || c == '-' || c == ' ') {
+			continue;
+		}
+		if (c == '/') {
+			// Only as the middle of "+/-" or "-/+".
+			if (i == 0 || i + 1 >= spec.size()) {
+				return false;
+			}
+			char prev = spec[i - 1];
+			char next = spec[i + 1];
+			if (!((prev == '+' && next == '-') || (prev == '-' && next == '+'))) {
+				return false;
+			}
+			continue;
+		}
+		if (c == '.') {
+			// Only as part of a "..." run.
+			size_t start = i;
+			while (i < spec.size() && spec[i] == '.') {
+				i++;
+			}
+			if (i - start != 3) {
+				return false;
+			}
+			i--; // the loop increment consumes the last '.'
+			continue;
+		}
+		return false;
+	}
+	return has_digit;
+}
+
+// The context grammar expects a space before the suffix ("42 +/-3"), but a
+// space cannot appear unescaped in a URI. Accept the attached spelling
+// ("#L42+/-3") by restoring the separator the parser looks for.
+static string SpaceAttachedContext(const string &spec) {
+	size_t pos = spec.find("+/-");
+	if (pos == string::npos) {
+		pos = spec.find("-/+");
+	}
+	if (pos == string::npos || pos == 0 || spec[pos - 1] == ' ') {
+		return spec;
+	}
+	return spec.substr(0, pos) + " " + spec.substr(pos);
+}
+
+// Parse a validated spec string into a selection. Returns false (without
+// throwing) when the string is not a line spec, so the caller can fall back to
+// treating the text as part of the path.
+static bool TryParseLineSpecString(const string &spec, LineSelection &result) {
+	if (!IsLineSpecCharset(spec)) {
+		return false;
+	}
+	try {
+		result = LineSelection::Parse(Value(spec));
+	} catch (...) {
+		return false;
+	}
+	return !result.IsAll();
+}
+
+// Normalise the body of a URI-form spec into the ordinary line-spec grammar.
+// There is only one grammar: the delimiter ("#L", ";lines=") introduces exactly
+// what ":" already accepts. On top of that an 'L' immediately in front of any
+// number is tolerated and dropped, so the GitHub spelling "L123-L456" is not a
+// second form but the plain range "123-456", and a context suffix or any future
+// addition to the grammar works after the delimiter automatically.
+static string NormalizeLineSpecBody(const string &body) {
+	string spec;
+	for (size_t i = 0; i < body.size(); i++) {
+		char c = body[i];
+		if ((c == 'L' || c == 'l') && i + 1 < body.size() &&
+		    (std::isdigit(static_cast<unsigned char>(body[i + 1])) || body[i + 1] == '+')) {
+			continue; // 'L' prefix on a number
+		}
+		spec += c;
+	}
+	return SpaceAttachedContext(spec);
+}
+
+// "#L" (or "#l") introduces a line spec. The 'L' is required: it is what makes
+// the fragment unambiguously a line reference rather than some other tool's
+// fragment, so a bare "#12-24" is not a line spec.
+static bool NormalizeFragmentSpec(const string &fragment, string &result) {
+	if (fragment.empty() || (fragment[0] != 'L' && fragment[0] != 'l')) {
+		return false;
+	}
+	result = NormalizeLineSpecBody(fragment.substr(1));
+	return true;
+}
+
+const char *LineSpecSourceName(LineSpecSource source) {
+	switch (source) {
+	case LineSpecSource::COLON:
+		return "':'";
+	case LineSpecSource::FRAGMENT:
+		return "'#L'";
+	default:
+		return "none";
+	}
+}
+
+ParsedPathSpec ParsePathLineSpec(const string &path) {
+	// RFC 3986 3.5: the fragment starts at the *first* '#' (a '#' may not
+	// appear unescaped anywhere before it) and is stripped before the rest of
+	// the URI is dereferenced.
+	size_t hash_pos = path.find('#');
+	if (hash_pos != string::npos) {
+		string normalized;
+		LineSelection selection = LineSelection::All();
+		if (NormalizeFragmentSpec(path.substr(hash_pos + 1), normalized) &&
+		    TryParseLineSpecString(normalized, selection)) {
+			return ParsedPathSpec {path.substr(0, hash_pos), std::move(selection), LineSpecSource::FRAGMENT};
+		}
+		// Not a line spec: the '#' belongs to the path itself.
+	}
+
+	auto legacy = LineSelection::ParsePathWithLineSpec(path);
+	if (legacy.first == path) {
+		return ParsedPathSpec {path, LineSelection::All(), LineSpecSource::NONE};
+	}
+	return ParsedPathSpec {std::move(legacy.first), std::move(legacy.second), LineSpecSource::COLON};
+}
+
 } // namespace duckdb
