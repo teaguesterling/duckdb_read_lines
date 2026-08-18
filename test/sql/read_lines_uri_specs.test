@@ -197,12 +197,75 @@ FROM read_lines('test/data/simple.txt:3', lines := 1);
 1	line one
 
 # =============================================================================
+# SWHID qualifier form: path;lines=<spec>
+#
+# https://www.swhid.org/specification/v1.1/6.Qualified_identifiers/
+# =============================================================================
+
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt;lines=2-4');
+----
+2	line two
+3	line three
+4	line four
+
+# Single line is an equivalent spelling
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt;lines=3');
+----
+3	line three
+
+# Qualifiers may appear in any order: ';lines=' is extracted from the middle and
+# every other qualifier is left in place (here ';anchor=x.txt' is genuinely part
+# of the file name, so the locator only resolves if 'lines=2' was removed)
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/qual;lines=2;anchor=x.txt');
+----
+2	qual two
+
+# A ';lines=' value that is not a line spec leaves the path alone
+statement error
+SELECT * FROM read_lines('test/data/simple.txt;lines=all');
+----
+No files found that match the pattern
+
+# A full SWHID is accepted syntactically. Resolving swh: against the Software
+# Heritage archive is a different feature and is NOT implemented: with no
+# filesystem registered for the scheme this must fail as an unresolvable path,
+# not as a line-spec error.
+statement error
+SELECT * FROM read_lines('swh:1:cnt:94a9ed024d3859793618152ea559a168bbcbb5e2;origin=https://example.org;lines=11-12');
+----
+No files found that match the pattern
+
+# =============================================================================
 # Conflicting line specs are rejected, never silently resolved
 # =============================================================================
 
 # Fragment + explicit lines argument
 statement error
 SELECT * FROM read_lines('test/data/simple.txt#L2', lines := 3);
+----
+line spec
+
+# Qualifier + explicit lines argument
+statement error
+SELECT * FROM read_lines('test/data/simple.txt;lines=2', lines := 3);
+----
+line spec
+
+# Fragment + qualifier
+statement error
+SELECT * FROM read_lines('test/data/simple.txt;lines=2#L3');
+----
+line spec
+
+# Two ';lines=' qualifiers
+statement error
+SELECT * FROM read_lines('test/data/simple.txt;lines=2;lines=3');
 ----
 line spec
 

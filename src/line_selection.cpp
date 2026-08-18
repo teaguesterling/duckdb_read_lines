@@ -757,6 +757,12 @@ std::pair<string, LineSelection> LineSelection::ParsePathWithLineSpec(const stri
 // A downstream filesystem therefore never sees it, and "#L10-L20" is the line
 // anchor GitHub and GitLab already put in the address bar.
 //
+// The SWHID 'lines' qualifier is detachable in the same way - it is a named
+// qualifier of a qualified identifier, not part of the object it identifies:
+// "swh:1:cnt:94a9ed...;origin=https://example.org;lines=11-12". Note that only
+// the *syntax* is handled here; resolving swh: identifiers against the Software
+// Heritage archive is a different feature and is not implemented.
+//
 // These forms are only consulted after the literal path has failed to resolve
 // (see ReadTextLinesBind), which keeps the rule monotone: a file whose name
 // really contains '#' still wins over any decorated interpretation of it.
@@ -867,12 +873,41 @@ static bool NormalizeFragmentSpec(const string &fragment, string &result) {
 	return true;
 }
 
+// Find the SWHID 'lines' qualifier. A qualified identifier may carry several
+// ';'-separated qualifiers in any order (';origin=', ';visit=', ';anchor=',
+// ';path=', ';lines='), so the value ends at the next ';' and every other
+// qualifier is left untouched for whatever resolves the identifier.
+static bool FindLinesQualifier(const string &text, size_t &start, size_t &length, string &value, bool &duplicated) {
+	static const char *QUALIFIER = ";lines=";
+	static const size_t QUALIFIER_LEN = 7;
+
+	// Qualifier names are case-insensitive for our purposes; the lowered copy
+	// keeps byte offsets aligned with the original (ASCII case folding only).
+	string lowered = StringUtil::Lower(text);
+	size_t pos = lowered.find(QUALIFIER);
+	if (pos == string::npos) {
+		return false;
+	}
+	size_t value_start = pos + QUALIFIER_LEN;
+	size_t value_end = text.find(';', value_start);
+	if (value_end == string::npos) {
+		value_end = text.size();
+	}
+	start = pos;
+	length = value_end - pos;
+	value = text.substr(value_start, value_end - value_start);
+	duplicated = lowered.find(QUALIFIER, value_start) != string::npos;
+	return true;
+}
+
 const char *LineSpecSourceName(LineSpecSource source) {
 	switch (source) {
 	case LineSpecSource::COLON:
 		return "':'";
 	case LineSpecSource::FRAGMENT:
 		return "'#L'";
+	case LineSpecSource::QUALIFIER:
+		return "';lines='";
 	default:
 		return "none";
 	}
@@ -883,14 +918,40 @@ ParsedPathSpec ParsePathLineSpec(const string &path) {
 	// appear unescaped anywhere before it) and is stripped before the rest of
 	// the URI is dereferenced.
 	size_t hash_pos = path.find('#');
-	if (hash_pos != string::npos) {
-		string normalized;
-		LineSelection selection = LineSelection::All();
-		if (NormalizeFragmentSpec(path.substr(hash_pos + 1), normalized) &&
-		    TryParseLineSpecString(normalized, selection)) {
-			return ParsedPathSpec {path.substr(0, hash_pos), std::move(selection), LineSpecSource::FRAGMENT};
-		}
-		// Not a line spec: the '#' belongs to the path itself.
+	string base = hash_pos == string::npos ? path : path.substr(0, hash_pos);
+	string fragment_suffix = hash_pos == string::npos ? string() : path.substr(hash_pos);
+
+	string normalized;
+	LineSelection fragment_selection = LineSelection::All();
+	bool has_fragment = hash_pos != string::npos && NormalizeFragmentSpec(path.substr(hash_pos + 1), normalized) &&
+	                    TryParseLineSpecString(normalized, fragment_selection);
+
+	size_t qualifier_start = 0;
+	size_t qualifier_length = 0;
+	string qualifier_value;
+	bool qualifier_duplicated = false;
+	LineSelection qualifier_selection = LineSelection::All();
+	bool has_qualifier =
+	    FindLinesQualifier(base, qualifier_start, qualifier_length, qualifier_value, qualifier_duplicated) &&
+	    TryParseLineSpecString(NormalizeLineSpecBody(qualifier_value), qualifier_selection);
+
+	// Naming the lines twice is an error, never a silent choice.
+	if (has_fragment && has_qualifier) {
+		throw InvalidInputException("read_lines: path \"%s\" carries both a '#L' line spec and a ';lines=' line "
+		                            "spec; use only one",
+		                            path);
+	}
+	if (has_qualifier && qualifier_duplicated) {
+		throw InvalidInputException("read_lines: path \"%s\" carries more than one ';lines=' line spec; use only one",
+		                            path);
+	}
+
+	if (has_fragment) {
+		return ParsedPathSpec {base, std::move(fragment_selection), LineSpecSource::FRAGMENT};
+	}
+	if (has_qualifier) {
+		string locator = base.substr(0, qualifier_start) + base.substr(qualifier_start + qualifier_length);
+		return ParsedPathSpec {locator + fragment_suffix, std::move(qualifier_selection), LineSpecSource::QUALIFIER};
 	}
 
 	auto legacy = LineSelection::ParsePathWithLineSpec(path);

@@ -101,14 +101,32 @@ as above. An `L` in front of any number is tolerated and dropped, so GitHub's
 spec -- the `L` is what marks a fragment as a line reference rather than some
 other tool's anchor.
 
+The [SWHID](https://www.swhid.org/specification/v1.1/6.Qualified_identifiers/)
+`lines` qualifier is accepted for the same reason -- it is a named qualifier of
+a qualified identifier, not part of the object it identifies:
+
+```sql
+read_lines('file.py;lines=10-20')
+read_lines('file.py;lines=42')
+read_lines('swh:1:cnt:94a9ed02...;origin=https://example.org;lines=11-12')
+```
+
+Qualifiers may appear in any order: only `;lines=` is removed, every other
+qualifier is left in place for whatever resolves the identifier. The same one
+grammar applies behind the `=`. Note that only the *syntax* is supported --
+resolving `swh:` identifiers against the Software Heritage archive is a
+different feature and is not implemented, so such a path fails as an
+unresolvable path, never because of its line spec.
+
 Rules:
 
 - The literal path is always tried first, so a file really named
   `weird#name.txt` still reads as that file.
 - Per RFC 3986 the fragment starts at the *first* `#`, and a query string
   (`?...`) stays part of the locator, since a filesystem may need it.
-- Naming the lines twice is an error, never a silent choice: `#L...` together
-  with a `lines` argument, or with a `:N-M` suffix, is rejected.
+- Naming the lines twice is an error, never a silent choice: `#L...` or
+  `;lines=...` together with a `lines` argument, with each other, or with a
+  `:N-M` suffix, is rejected.
 
 ### Lines Parameter
 

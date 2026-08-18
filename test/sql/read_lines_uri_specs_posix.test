@@ -30,3 +30,10 @@ FROM read_lines('__TEST_DIR__/vcs:SCHEMAS.md@HEAD#L2-L3');
 ----
 2	beta
 3	gamma
+
+# Qualifier spec on the same colon-bearing locator
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('__TEST_DIR__/vcs:SCHEMAS.md@HEAD;lines=4');
+----
+4	delta
