@@ -10,3 +10,6 @@ test/python/__pycache__/
 # Local tool config
 .lq/
 .mcp.json
+
+# clangd index / compile database copies produced by the build
+.cache/
