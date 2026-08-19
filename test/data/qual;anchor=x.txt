@@ -1,5 +1,0 @@
-qual one
-qual two
-qual three
-qual four
-qual five
