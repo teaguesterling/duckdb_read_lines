@@ -81,10 +81,9 @@ public:
 
 // Where a path-embedded line spec came from.
 enum class LineSpecSource : uint8_t {
-	NONE,     // the path carries no line spec
-	COLON,    // legacy suffix:   "file.py:10-20"
-	FRAGMENT, // URI fragment:    "file.py#L10-L20"
-	QUALIFIER // SWHID qualifier: "file.py;lines=10-20"
+	NONE,    // the path carries no line spec
+	COLON,   // legacy suffix: "file.py:10-20"
+	FRAGMENT // URI fragment:  "file.py#L10-L20"
 };
 
 struct ParsedPathSpec {
@@ -95,11 +94,9 @@ struct ParsedPathSpec {
 
 // Split a path into the locator a filesystem should see and the line selection
 // it carries. Recognises, in this order:
-//   1. the URI fragment            "path#L10-L20" / "path#L12-24"
-//   2. the SWHID 'lines' qualifier "path;lines=10-20"
-//   3. the legacy colon suffix     "path:10-20"
-// Returns source == NONE (and the path unchanged) when none of them applies.
-// Throws if the path carries more than one spec.
+//   1. the URI fragment        "path#L10-L20" / "path#L12-24"
+//   2. the legacy colon suffix "path:10-20"
+// Returns source == NONE (and the path unchanged) when neither applies.
 //
 // NOTE: only the syntax is parsed here; the caller is responsible for checking
 // that the literal path does not resolve *before* asking for an interpretation.

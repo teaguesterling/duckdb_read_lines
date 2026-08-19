@@ -1,5 +1,5 @@
 # name: test/sql/read_lines_uri_specs.test
-# description: URI-safe line specs - '#L...' fragment and ';lines=...' qualifier
+# description: URI-safe line specs - the '#L...' fragment
 # group: [sql]
 
 require read_lines
@@ -188,6 +188,37 @@ FROM read_lines('test/data/frag#L2.txt', lines := 3);
 ----
 3	frag three
 
+# ';lines=' is not a delimiter: a file whose name contains it reads as itself.
+# The SWHID 'lines' qualifier is deliberately not implemented (only SWHID's own
+# grammar makes that text detachable, and it is only coherent alongside swh:
+# resolution, which belongs elsewhere), so this is 5 lines, not 'qual two'.
+query I
+SELECT count(*) FROM read_lines('test/data/qual;lines=2.txt');
+----
+5
+
+# ... and the fragment still applies over such a name
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/qual;lines=2.txt#L3');
+----
+3	qual three
+
+# The other direction is the reason it is not implemented: 'simple.txt' exists,
+# so a rule that stripped ';lines=2' would silently return line 2 of a file the
+# caller did not name. Nothing is stripped, so this is a missing path.
+statement error
+SELECT * FROM read_lines('test/data/simple.txt;lines=2');
+----
+No files found that match the pattern "test/data/simple.txt;lines=2"
+
+# A full SWHID is a path like any other: with no filesystem registered for the
+# scheme it simply does not resolve, and its ';lines=' means nothing here
+statement error
+SELECT * FROM read_lines('swh:1:cnt:94a9ed024d3859793618152ea559a168bbcbb5e2;origin=https://example.org;lines=11-12');
+----
+No files found that match the pattern
+
 # The legacy ':' form is unchanged
 query II
 SELECT line_number, rtrim(content, chr(10) || chr(13))
@@ -205,51 +236,6 @@ FROM read_lines('test/data/simple.txt:3', lines := 1);
 1	line one
 
 # =============================================================================
-# SWHID qualifier form: path;lines=<spec>
-#
-# https://www.swhid.org/specification/v1.1/6.Qualified_identifiers/
-# =============================================================================
-
-query II
-SELECT line_number, rtrim(content, chr(10) || chr(13))
-FROM read_lines('test/data/simple.txt;lines=2-4');
-----
-2	line two
-3	line three
-4	line four
-
-# Single line is an equivalent spelling
-query II
-SELECT line_number, rtrim(content, chr(10) || chr(13))
-FROM read_lines('test/data/simple.txt;lines=3');
-----
-3	line three
-
-# Qualifiers may appear in any order: ';lines=' is extracted from the middle and
-# every other qualifier is left in place (here ';anchor=x.txt' is genuinely part
-# of the file name, so the locator only resolves if 'lines=2' was removed)
-query II
-SELECT line_number, rtrim(content, chr(10) || chr(13))
-FROM read_lines('test/data/qual;lines=2;anchor=x.txt');
-----
-2	qual two
-
-# A ';lines=' value that is not a line spec leaves the path alone
-statement error
-SELECT * FROM read_lines('test/data/simple.txt;lines=all');
-----
-No files found that match the pattern
-
-# A full SWHID is accepted syntactically. Resolving swh: against the Software
-# Heritage archive is a different feature and is NOT implemented: with no
-# filesystem registered for the scheme this must fail as an unresolvable path,
-# not as a line-spec error.
-statement error
-SELECT * FROM read_lines('swh:1:cnt:94a9ed024d3859793618152ea559a168bbcbb5e2;origin=https://example.org;lines=11-12');
-----
-No files found that match the pattern
-
-# =============================================================================
 # RFC 3986 component order: '?query' precedes '#fragment'
 # =============================================================================
 
@@ -258,12 +244,6 @@ No files found that match the pattern
 # test/data/simple.txt, it must fail to find 'test/data/simple.txt?x=1'
 statement error
 SELECT * FROM read_lines('test/data/simple.txt?x=1#L2');
-----
-No files found that match the pattern
-
-# ';lines=' is a path qualifier and must not be harvested out of a query string
-statement error
-SELECT * FROM read_lines('test/data/simple.txt?a=1;lines=2');
 ----
 No files found that match the pattern
 
@@ -287,24 +267,6 @@ line spec
 # ... the positional spelling of the same argument is rejected as well
 statement error
 SELECT * FROM read_lines('test/data/simple.txt#L2', '3');
-----
-line spec
-
-# Qualifier + explicit lines argument
-statement error
-SELECT * FROM read_lines('test/data/simple.txt;lines=2', lines := 3);
-----
-line spec
-
-# Fragment + qualifier
-statement error
-SELECT * FROM read_lines('test/data/simple.txt;lines=2#L3');
-----
-line spec
-
-# Two ';lines=' qualifiers
-statement error
-SELECT * FROM read_lines('test/data/simple.txt;lines=2;lines=3');
 ----
 line spec
 
