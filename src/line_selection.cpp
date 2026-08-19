@@ -631,6 +631,25 @@ bool LineSelection::HasFromEndReferences() const {
 	return false;
 }
 
+int64_t LineSelection::MaxFromEndDistance() const {
+	if (match_all_) {
+		return 0;
+	}
+	int64_t max_distance = 0;
+	for (const auto &range : ranges_) {
+		// -INT64_MIN is UB and no real selection reaches it; treat it as
+		// "further back than we will ever remember" by leaving it out, which
+		// only costs the caller its fast path.
+		if (range.start < 0 && range.start != std::numeric_limits<int64_t>::min()) {
+			max_distance = std::max(max_distance, -range.start);
+		}
+		if (range.end < 0 && range.end != std::numeric_limits<int64_t>::min()) {
+			max_distance = std::max(max_distance, -range.end);
+		}
+	}
+	return max_distance;
+}
+
 void LineSelection::ResolveFromEnd(int64_t total_lines) {
 	if (match_all_) {
 		return;

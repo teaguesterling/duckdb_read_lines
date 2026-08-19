@@ -9,6 +9,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 #include "utf8proc_wrapper.hpp"
+#include <algorithm>
 #include <exception>
 
 namespace duckdb {
@@ -225,7 +226,12 @@ static unique_ptr<GlobalTableFunctionState> ReadTextLinesInit(ClientContext &con
 // =============================================================================
 class BufferedLineReader {
 public:
-	explicit BufferedLineReader(FileHandle &file) : file(file) {
+	// start_offset is the source offset the handle is currently positioned at.
+	// A non-zero one means the caller seeked into the middle of the source, so
+	// the byte-order mark (which only ever sits at offset 0) is already behind
+	// us and must not be looked for again.
+	explicit BufferedLineReader(FileHandle &file, int64_t start_offset = 0)
+	    : file(file), buffer_base(start_offset), bom_checked(start_offset != 0) {
 	}
 
 	// Extract the next line, including its terminator. Returns false at end of
@@ -238,6 +244,74 @@ public:
 		start_offset = buffer_base + static_cast<int64_t>(pos);
 		line = ExtractLine(buffer, pos);
 		return true;
+	}
+
+	// Count the lines from the current position to end of stream without
+	// materialising any of them, and remember where the last `tail_window`
+	// of them start (ascending, in tail_starts). A seekable caller resolving a
+	// from-end reference can then jump straight to the first line it needs
+	// instead of reading the whole source a second time.
+	//
+	// The line rule is exactly ExtractLine's / CountLinesInText's: '\n', '\r\n'
+	// and a lone '\r' each end a line, and a final unterminated run of bytes is
+	// a line of its own.
+	int64_t CountRemainingLines(idx_t tail_window, vector<int64_t> &tail_starts) {
+		SkipBOM();
+		tail_starts.clear();
+		idx_t ring_head = 0; // next slot to overwrite once the ring is full
+		auto remember = [&](int64_t offset) {
+			if (tail_window == 0) {
+				return;
+			}
+			if (tail_starts.size() < tail_window) {
+				tail_starts.push_back(offset);
+			} else {
+				tail_starts[ring_head] = offset;
+				ring_head = (ring_head + 1) % tail_window;
+			}
+		};
+
+		int64_t count = 0;
+		int64_t line_start = buffer_base + static_cast<int64_t>(pos);
+		bool line_open = false; // bytes seen since the last terminator
+		while (true) {
+			while (pos < buffer.size()) {
+				char c = buffer[pos];
+				if (c == '\n') {
+					pos++;
+				} else if (c == '\r') {
+					pos++;
+					// A '\r' as the last buffered byte may be the first half of
+					// a '\r\n' spanning a read boundary; refill before deciding.
+					if (pos == buffer.size() && !eof) {
+						Fill();
+					}
+					if (pos < buffer.size() && buffer[pos] == '\n') {
+						pos++;
+					}
+				} else {
+					pos++;
+					line_open = true;
+					continue;
+				}
+				count++;
+				remember(line_start);
+				line_start = buffer_base + static_cast<int64_t>(pos);
+				line_open = false;
+			}
+			if (eof) {
+				break;
+			}
+			Fill();
+		}
+		if (line_open) {
+			count++;
+			remember(line_start);
+		}
+		if (tail_starts.size() == tail_window && ring_head != 0) {
+			std::rotate(tail_starts.begin(), tail_starts.begin() + static_cast<int64_t>(ring_head), tail_starts.end());
+		}
+		return count;
 	}
 
 	// Buffer the whole remaining stream. Needed before CountBufferedLines() on
@@ -326,16 +400,58 @@ private:
 	bool bom_checked = false;
 };
 
-// Count total lines by scanning the stream through a reader (for resolving
-// from-end references on seekable sources; the caller rewinds afterwards).
-static int64_t CountLinesInStream(BufferedLineReader &reader) {
-	string line;
-	int64_t offset;
-	int64_t count = 0;
-	while (reader.NextLine(line, offset)) {
-		count++;
+// How many line starts we are willing to remember while counting, so that a
+// from-end selection can be served without re-reading the head of the source.
+// 1M offsets is 8MB; past that the plain rewind is the cheaper trade.
+static constexpr idx_t MAX_TAIL_MEMO_LINES = 1u << 20;
+
+// Resolve a selection's from-end references and leave `reader` positioned so
+// that the next line it yields is the first one the selection wants, with
+// `line_number` set to the number of the line before it.
+//
+// line_number is the true line number in the source, so the lines ahead of the
+// selection have to be counted whichever way this is done. What can be avoided
+// is reading them twice: counting no longer materialises the lines it walks
+// past, and it remembers where the last few lines start, so a tail selection
+// resumes by seeking straight to its first line. A selection that also names a
+// head range, or that reaches further back than the remembered window, rewinds
+// to the start as before.
+//
+// Non-seekable sources (pipes, streams) cannot rewind at all: they buffer the
+// whole stream during the count and then serve every line from that buffer,
+// which is unchanged behaviour.
+static LineSelection PrepareFromEndScan(FileHandle &file, unique_ptr<BufferedLineReader> &reader,
+                                        const LineSelection &selection, int64_t &line_number) {
+	auto resolved = selection;
+	if (!file.CanSeek()) {
+		reader->SlurpAll();
+		resolved.ResolveFromEnd(reader->CountBufferedLines());
+		return resolved;
 	}
-	return count;
+
+	auto from_end_distance = selection.MaxFromEndDistance();
+	idx_t tail_window = 0;
+	if (from_end_distance > 0 && from_end_distance <= static_cast<int64_t>(MAX_TAIL_MEMO_LINES)) {
+		tail_window = static_cast<idx_t>(from_end_distance);
+	}
+	vector<int64_t> tail_starts;
+	int64_t total_lines = reader->CountRemainingLines(tail_window, tail_starts);
+	resolved.ResolveFromEnd(total_lines);
+
+	// The remembered offsets cover lines [first_memo .. total_lines].
+	int64_t first_memo = total_lines - static_cast<int64_t>(tail_starts.size()) + 1;
+	int64_t min_line = resolved.MinLine();
+	if (!tail_starts.empty() && min_line >= first_memo && min_line <= total_lines) {
+		int64_t resume_offset = tail_starts[static_cast<idx_t>(min_line - first_memo)];
+		file.Seek(static_cast<idx_t>(resume_offset));
+		reader = make_uniq<BufferedLineReader>(file, resume_offset);
+		line_number = min_line - 1;
+	} else {
+		file.Seek(0);
+		reader = make_uniq<BufferedLineReader>(file);
+		line_number = 0;
+	}
+	return resolved;
 }
 
 static bool OpenNextFile(ReadTextLinesGlobalState &state, const ReadTextLinesBindData &bind_data) {
@@ -353,19 +469,8 @@ static bool OpenNextFile(ReadTextLinesGlobalState &state, const ReadTextLinesBin
 			if (bind_data.line_selection.HasFromEndReferences()) {
 				// From-end references (e.g. '+2' = 2nd line from the end) need
 				// the total line count before any line can be emitted.
-				int64_t total_lines;
-				if (state.current_file->CanSeek()) {
-					total_lines = CountLinesInStream(*state.reader);
-					state.current_file->Seek(0);
-					state.reader = make_uniq<BufferedLineReader>(*state.current_file);
-				} else {
-					// Pipes and streams cannot rewind after counting: buffer
-					// the whole stream and serve lines from the buffer.
-					state.reader->SlurpAll();
-					total_lines = state.reader->CountBufferedLines();
-				}
-				state.resolved_selection = bind_data.line_selection;
-				state.resolved_selection.ResolveFromEnd(total_lines);
+				state.resolved_selection = PrepareFromEndScan(*state.current_file, state.reader,
+				                                              bind_data.line_selection, state.current_line_number);
 			} else {
 				state.resolved_selection = bind_data.line_selection;
 			}
@@ -641,20 +746,8 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 
 				if (bind_data.line_selection.HasFromEndReferences()) {
 					// From-end references need the total line count up front.
-					int64_t total_lines;
-					if (state.current_file->CanSeek()) {
-						total_lines = CountLinesInStream(*state.reader);
-						state.current_file->Seek(0);
-						state.reader = make_uniq<BufferedLineReader>(*state.current_file);
-					} else {
-						// Pipes (e.g. a per-row shellfs command) cannot rewind
-						// after counting: buffer the whole stream and serve
-						// lines from the buffer.
-						state.reader->SlurpAll();
-						total_lines = state.reader->CountBufferedLines();
-					}
-					state.resolved_selection = bind_data.line_selection;
-					state.resolved_selection.ResolveFromEnd(total_lines);
+					state.resolved_selection = PrepareFromEndScan(*state.current_file, state.reader,
+					                                              bind_data.line_selection, state.current_line_number);
 				} else {
 					state.resolved_selection = bind_data.line_selection;
 				}

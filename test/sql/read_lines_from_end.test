@@ -1,0 +1,195 @@
+# name: test/sql/read_lines_from_end.test
+# description: From-end references resolved against a seekable file must return
+#              the same line numbers, content and byte offsets as a plain scan,
+#              including when the reader resumes by seeking into the middle of
+#              the file rather than rewinding to the start.
+# group: [read_lines]
+
+require read_lines
+
+# =============================================================================
+# byte_offset survives the resume
+#
+# A from-end selection restarts at the byte offset of its first line, so these
+# offsets are the ones that would silently drift if the resume point were off.
+# =============================================================================
+
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset
+FROM read_lines('test/data/simple.txt', '+3-')
+ORDER BY line_number;
+----
+3	line three	18
+4	line four	29
+5	line five	39
+
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset
+FROM read_lines('test/data/simple.txt', '+2')
+ORDER BY line_number;
+----
+4	line four	29
+
+# The last line, reached by seeking past everything before it.
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset
+FROM read_lines('test/data/simple.txt', '+1')
+ORDER BY line_number;
+----
+5	line five	39
+
+# A from-end window wider than the file clamps to line 1 and still reads the
+# whole file, offsets included.
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset
+FROM read_lines('test/data/simple.txt', '+99-')
+ORDER BY line_number;
+----
+1	line one	0
+2	line two	9
+3	line three	18
+4	line four	29
+5	line five	39
+
+# A selection naming both a head range and a tail cannot resume mid-file; it
+# still has to produce both halves.
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/simple.txt', ['1-2', '+2-'])
+ORDER BY line_number;
+----
+1	line one
+2	line two
+4	line four
+5	line five
+
+# =============================================================================
+# The line rule is the same on the from-end path as on a plain scan
+# =============================================================================
+
+# CRLF
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset
+FROM read_lines('test/data/crlf.txt', '+2-')
+ORDER BY line_number;
+----
+2	two	5
+3	three	10
+
+# Lone CR
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset
+FROM read_lines('test/data/lone_cr.txt', '+2-')
+ORDER BY line_number;
+----
+2	b	2
+3	c	4
+
+# A byte-order mark is not part of line 1, and line 1 still starts at offset 3.
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset
+FROM read_lines('test/data/bom.txt', '+2-')
+ORDER BY line_number;
+----
+1	hello	3
+2	world	9
+
+# Unterminated final line
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset
+FROM read_lines('test/data/no_trailing_newline.txt', '+1')
+ORDER BY line_number;
+----
+3	third	13
+
+# A '\n'-terminated empty final line is a line of its own and can be selected
+# from the end.
+query III
+SELECT line_number, length(content), byte_offset
+FROM read_lines('test/data/only_newline.txt', '+1')
+ORDER BY line_number;
+----
+1	1	0
+
+query III
+SELECT line_number, length(content), byte_offset
+FROM read_lines('test/data/trailing_blank.txt', '+1')
+ORDER BY line_number;
+----
+2	1	2
+
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset
+FROM read_lines('test/data/single_line.txt', '+1')
+ORDER BY line_number;
+----
+1	only one line	0
+
+query II
+SELECT line_number, content FROM read_lines('test/data/empty.txt', '+1-');
+----
+
+# =============================================================================
+# Across the reader's fill boundary
+#
+# crlf_boundary.txt puts a '\r\n' at bytes 65535-65536, i.e. straddling the
+# reader's 64KB chunk, and the tail the selection wants lives past it. The
+# whole-file scan and the from-end scan must agree on every column.
+# =============================================================================
+
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset
+FROM read_lines('test/data/crlf_boundary.txt', '+3-')
+ORDER BY line_number;
+----
+2	x	65537
+3	y	65540
+4	z	65543
+
+query III
+SELECT line_number, rtrim(content, chr(10) || chr(13)), byte_offset
+FROM read_lines('test/data/crlf_boundary.txt', '+1')
+ORDER BY line_number;
+----
+4	z	65543
+
+# The from-end scan agrees with the plain scan, row for row.
+query I
+SELECT count(*) FROM (
+    SELECT line_number, content, byte_offset FROM read_lines('test/data/crlf_boundary.txt')
+    EXCEPT ALL
+    SELECT line_number, content, byte_offset FROM read_lines('test/data/crlf_boundary.txt', '+99-')
+);
+----
+0
+
+query II
+SELECT line_number, length(content) FROM read_lines('test/data/crlf_boundary.txt', '+4');
+----
+1	65537
+
+# =============================================================================
+# read_lines_lateral resolves from-end references the same way
+# =============================================================================
+
+query III
+SELECT l.line_number, rtrim(l.content, chr(10) || chr(13)), l.byte_offset
+FROM (VALUES ('test/data/crlf_boundary.txt')) AS v(path),
+     read_lines_lateral(v.path, '+2-') AS l
+ORDER BY l.line_number;
+----
+3	y	65540
+4	z	65543
+
+# The same source read twice in one lateral scan must not carry state across
+# rows: each row re-opens, re-counts and re-seeks.
+query III
+SELECT l.line_number, rtrim(l.content, chr(10) || chr(13)), l.byte_offset
+FROM (VALUES ('test/data/simple.txt'), ('test/data/simple.txt')) AS v(path),
+     read_lines_lateral(v.path, '+2-') AS l
+ORDER BY l.line_number, l.byte_offset;
+----
+4	line four	29
+4	line four	29
+5	line five	39
+5	line five	39
