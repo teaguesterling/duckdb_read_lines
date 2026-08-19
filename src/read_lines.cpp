@@ -8,6 +8,8 @@
 #include "duckdb/common/open_file_info.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
+#include "duckdb/main/error_manager.hpp"
 #include "utf8proc_wrapper.hpp"
 #include <algorithm>
 #include <exception>
@@ -486,11 +488,74 @@ static bool OpenNextFile(ReadTextLinesGlobalState &state, const ReadTextLinesBin
 	return false;
 }
 
+// =============================================================================
+// LineOutputWriter
+//
+// Writes the four output columns (line_number, content, byte_offset,
+// file_path) straight into the chunk's vectors.
+//
+// The obvious `Vector::SetValue(row, Value(...))` costs a heap-allocated
+// StringValueInfo per string cell and re-runs the UTF-8 check the scan has
+// already done, and it did that four times per line -- on a 2M-line file that
+// was more than half the scan. Writing the vectors directly costs one copy of
+// the line into the chunk's string heap and nothing else.
+//
+// file_path is the same string for every line of a source, so it is added to
+// the heap once per source rather than once per row. The heap is reset with
+// the chunk, so the writer is per-invocation and re-adds the path each time.
+// =============================================================================
+class LineOutputWriter {
+public:
+	explicit LineOutputWriter(DataChunk &output)
+	    : content_vector(output.data[1]), path_vector(output.data[3]),
+	      line_numbers(FlatVector::GetData<int64_t>(output.data[0])),
+	      contents(FlatVector::GetData<string_t>(output.data[1])),
+	      byte_offsets(FlatVector::GetData<int64_t>(output.data[2])),
+	      paths(FlatVector::GetData<string_t>(output.data[3])) {
+	}
+
+	// Point subsequent rows at `file_path`. `source_token` is anything that
+	// changes when the source does (the file index, the lateral input row), so
+	// that the path is only re-added when it actually differs.
+	void SetSource(const string &file_path, idx_t source_token) {
+		if (has_path && source_token == cached_token) {
+			return;
+		}
+		// Building a Value used to reject a path that is not valid UTF-8; keep
+		// rejecting it, but once per source instead of once per line.
+		if (!Value::StringIsValid(file_path.c_str(), file_path.size())) {
+			throw ErrorManager::InvalidUnicodeError(file_path, "value construction");
+		}
+		cached_path = StringVector::AddString(path_vector, file_path);
+		cached_token = source_token;
+		has_path = true;
+	}
+
+	void Write(idx_t row, int64_t line_number, const string &content, int64_t byte_offset) {
+		line_numbers[row] = line_number;
+		contents[row] = StringVector::AddString(content_vector, content);
+		byte_offsets[row] = byte_offset;
+		paths[row] = cached_path;
+	}
+
+private:
+	Vector &content_vector;
+	Vector &path_vector;
+	int64_t *line_numbers;
+	string_t *contents;
+	int64_t *byte_offsets;
+	string_t *paths;
+	string_t cached_path;
+	idx_t cached_token = 0;
+	bool has_path = false;
+};
+
 static void ReadTextLinesFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
 	auto &bind_data = data_p.bind_data->Cast<ReadTextLinesBindData>();
 	auto &state = data_p.global_state->Cast<ReadTextLinesGlobalState>();
 
 	idx_t output_row = 0;
+	LineOutputWriter writer(output);
 
 	while (output_row < STANDARD_VECTOR_SIZE) {
 		if (state.file_finished) {
@@ -498,6 +563,7 @@ static void ReadTextLinesFunction(ClientContext &context, TableFunctionInput &da
 				break;
 			}
 		}
+		writer.SetSource(state.current_file_path, state.file_index);
 
 		while (output_row < STANDARD_VECTOR_SIZE && !state.file_finished) {
 			string line;
@@ -540,10 +606,8 @@ static void ReadTextLinesFunction(ClientContext &context, TableFunctionInput &da
 				    state.current_line_number, state.current_file_path);
 			}
 
-			output.data[0].SetValue(output_row, Value::BIGINT(state.current_line_number));
-			output.data[1].SetValue(output_row, Value(ApplyLineTrim(line, bind_data.trim_mode)));
-			output.data[2].SetValue(output_row, Value::BIGINT(line_start_offset));
-			output.data[3].SetValue(output_row, Value(state.current_file_path));
+			writer.Write(output_row, state.current_line_number, ApplyLineTrim(line, bind_data.trim_mode),
+			             line_start_offset);
 
 			output_row++;
 		}
@@ -711,6 +775,7 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 	}
 
 	idx_t output_row = 0;
+	LineOutputWriter writer(output);
 
 	while (output_row < STANDARD_VECTOR_SIZE) {
 		// Need to open a new file?
@@ -763,6 +828,7 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 		// Read lines from the current source. The reader persists in operator
 		// state, so the parse position survives this operator's
 		// HAVE_MORE_OUTPUT re-invocations.
+		writer.SetSource(state.current_file_path, state.current_row);
 		while (output_row < STANDARD_VECTOR_SIZE && state.file_open) {
 			string line;
 			int64_t line_start_offset;
@@ -803,10 +869,8 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 			}
 
 			// Output the line
-			output.data[0].SetValue(output_row, Value::BIGINT(state.current_line_number));
-			output.data[1].SetValue(output_row, Value(ApplyLineTrim(line, bind_data.trim_mode)));
-			output.data[2].SetValue(output_row, Value::BIGINT(line_start_offset));
-			output.data[3].SetValue(output_row, Value(state.current_file_path));
+			writer.Write(output_row, state.current_line_number, ApplyLineTrim(line, bind_data.trim_mode),
+			             line_start_offset);
 
 			output_row++;
 		}
