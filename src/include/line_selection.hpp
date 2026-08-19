@@ -42,6 +42,11 @@ public:
 	// Check if selection has any "from end" references (negative line numbers)
 	bool HasFromEndReferences() const;
 
+	// Largest "from end" distance the selection names, e.g. 10 for '+10-+5' and
+	// 1 for '+1'. Zero when the selection has no from-end references. Callers
+	// use it to bound how much of the tail they must remember while counting.
+	int64_t MaxFromEndDistance() const;
+
 	// Resolve "from end" references given the total line count
 	// Converts negative line numbers to positive (e.g., -10 with 100 lines -> 91)
 	void ResolveFromEnd(int64_t total_lines);

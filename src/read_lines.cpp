@@ -8,7 +8,10 @@
 #include "duckdb/common/open_file_info.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
+#include "duckdb/main/error_manager.hpp"
 #include "utf8proc_wrapper.hpp"
+#include <algorithm>
 #include <exception>
 
 namespace duckdb {
@@ -44,6 +47,54 @@ struct ReadTextLinesGlobalState : public GlobalTableFunctionState {
 	      resolved_selection(LineSelection::All()) {
 	}
 
+	// Deliberately single-threaded, after measuring. Kept here rather than left
+	// implicit because "1" has been the value since the first commit and read
+	// like an unexamined default.
+	//
+	// It is also load-bearing as the code stands: the open handle, the reader,
+	// the line cursor and the per-file resolved selection all live in this
+	// global state and there is no local state, so a second thread would race
+	// on all four. Raising the number is a rewrite of the scan, not a knob.
+	//
+	// Whether that rewrite is worth doing:
+	//
+	//   - The barrier is line_number. It is a required output column and must
+	//     be the true 1-based number of the line in the file, so a thread that
+	//     starts at a byte offset cannot number its lines until every byte
+	//     before it has been counted. Resynchronising to the next terminator
+	//     (which for us is '\n', '\r\n' or a lone '\r', and may straddle the
+	//     split) gives correct line *boundaries* but not correct line
+	//     *numbers*. Getting those needs either a serial prefix pass over the
+	//     whole file or a count-blocks / prefix-sum / emit-blocks design that
+	//     reads the file twice.
+	//
+	//   - The ceiling is real but modest. A full scan of a 125MB / 2M-line file
+	//     costs ~570ms of CPU; a non-materialising count of the same file (what
+	//     the prefix phase would cost, serially) is ~160ms. So a two-phase
+	//     parallel scan lands somewhere around 160ms + 410ms/threads before any
+	//     of the coordination overhead - call it 3x on a large single file,
+	//     against the 1.6x that came for free from not building a Value per
+	//     output cell. Cold page cache tracks warm here, so this is CPU, not
+	//     I/O, and threads would in principle divide it.
+	//
+	//   - The cost is not only complexity. Today a scan emits files in glob
+	//     order and lines in file order, deterministically; 78 multi-row
+	//     assertions in the suite are written against that order with no
+	//     ORDER BY. Parallel emission - even the easy per-file kind, which is
+	//     otherwise trivially correct because line numbers restart per file -
+	//     gives that up, and for a line-reading function the order is very
+	//     plausibly what callers rely on.
+	//
+	//   - The early exit would need re-deriving too: a bounded selection like
+	//     '1-100' currently stops the scan as soon as it passes the last range
+	//     and finishes a 125MB file in ~0ms. Blocks scheduled ahead of that
+	//     point would have to be mapped from line numbers to byte ranges,
+	//     which is the same information the scan does not have up front.
+	//
+	// So: not parallelised, because the ordering guarantee is worth more than
+	// a 3x on the largest inputs and the single-threaded path had cheaper wins
+	// left in it. Revisit if a workload turns up where a single very large file
+	// is the bottleneck and the caller is content to sort.
 	idx_t MaxThreads() const override {
 		return 1;
 	}
@@ -225,7 +276,12 @@ static unique_ptr<GlobalTableFunctionState> ReadTextLinesInit(ClientContext &con
 // =============================================================================
 class BufferedLineReader {
 public:
-	explicit BufferedLineReader(FileHandle &file) : file(file) {
+	// start_offset is the source offset the handle is currently positioned at.
+	// A non-zero one means the caller seeked into the middle of the source, so
+	// the byte-order mark (which only ever sits at offset 0) is already behind
+	// us and must not be looked for again.
+	explicit BufferedLineReader(FileHandle &file, int64_t start_offset = 0)
+	    : file(file), buffer_base(start_offset), bom_checked(start_offset != 0) {
 	}
 
 	// Extract the next line, including its terminator. Returns false at end of
@@ -238,6 +294,74 @@ public:
 		start_offset = buffer_base + static_cast<int64_t>(pos);
 		line = ExtractLine(buffer, pos);
 		return true;
+	}
+
+	// Count the lines from the current position to end of stream without
+	// materialising any of them, and remember where the last `tail_window`
+	// of them start (ascending, in tail_starts). A seekable caller resolving a
+	// from-end reference can then jump straight to the first line it needs
+	// instead of reading the whole source a second time.
+	//
+	// The line rule is exactly ExtractLine's / CountLinesInText's: '\n', '\r\n'
+	// and a lone '\r' each end a line, and a final unterminated run of bytes is
+	// a line of its own.
+	int64_t CountRemainingLines(idx_t tail_window, vector<int64_t> &tail_starts) {
+		SkipBOM();
+		tail_starts.clear();
+		idx_t ring_head = 0; // next slot to overwrite once the ring is full
+		auto remember = [&](int64_t offset) {
+			if (tail_window == 0) {
+				return;
+			}
+			if (tail_starts.size() < tail_window) {
+				tail_starts.push_back(offset);
+			} else {
+				tail_starts[ring_head] = offset;
+				ring_head = (ring_head + 1) % tail_window;
+			}
+		};
+
+		int64_t count = 0;
+		int64_t line_start = buffer_base + static_cast<int64_t>(pos);
+		bool line_open = false; // bytes seen since the last terminator
+		while (true) {
+			while (pos < buffer.size()) {
+				char c = buffer[pos];
+				if (c == '\n') {
+					pos++;
+				} else if (c == '\r') {
+					pos++;
+					// A '\r' as the last buffered byte may be the first half of
+					// a '\r\n' spanning a read boundary; refill before deciding.
+					if (pos == buffer.size() && !eof) {
+						Fill();
+					}
+					if (pos < buffer.size() && buffer[pos] == '\n') {
+						pos++;
+					}
+				} else {
+					pos++;
+					line_open = true;
+					continue;
+				}
+				count++;
+				remember(line_start);
+				line_start = buffer_base + static_cast<int64_t>(pos);
+				line_open = false;
+			}
+			if (eof) {
+				break;
+			}
+			Fill();
+		}
+		if (line_open) {
+			count++;
+			remember(line_start);
+		}
+		if (tail_starts.size() == tail_window && ring_head != 0) {
+			std::rotate(tail_starts.begin(), tail_starts.begin() + static_cast<int64_t>(ring_head), tail_starts.end());
+		}
+		return count;
 	}
 
 	// Buffer the whole remaining stream. Needed before CountBufferedLines() on
@@ -326,16 +450,58 @@ private:
 	bool bom_checked = false;
 };
 
-// Count total lines by scanning the stream through a reader (for resolving
-// from-end references on seekable sources; the caller rewinds afterwards).
-static int64_t CountLinesInStream(BufferedLineReader &reader) {
-	string line;
-	int64_t offset;
-	int64_t count = 0;
-	while (reader.NextLine(line, offset)) {
-		count++;
+// How many line starts we are willing to remember while counting, so that a
+// from-end selection can be served without re-reading the head of the source.
+// 1M offsets is 8MB; past that the plain rewind is the cheaper trade.
+static constexpr idx_t MAX_TAIL_MEMO_LINES = 1u << 20;
+
+// Resolve a selection's from-end references and leave `reader` positioned so
+// that the next line it yields is the first one the selection wants, with
+// `line_number` set to the number of the line before it.
+//
+// line_number is the true line number in the source, so the lines ahead of the
+// selection have to be counted whichever way this is done. What can be avoided
+// is reading them twice: counting no longer materialises the lines it walks
+// past, and it remembers where the last few lines start, so a tail selection
+// resumes by seeking straight to its first line. A selection that also names a
+// head range, or that reaches further back than the remembered window, rewinds
+// to the start as before.
+//
+// Non-seekable sources (pipes, streams) cannot rewind at all: they buffer the
+// whole stream during the count and then serve every line from that buffer,
+// which is unchanged behaviour.
+static LineSelection PrepareFromEndScan(FileHandle &file, unique_ptr<BufferedLineReader> &reader,
+                                        const LineSelection &selection, int64_t &line_number) {
+	auto resolved = selection;
+	if (!file.CanSeek()) {
+		reader->SlurpAll();
+		resolved.ResolveFromEnd(reader->CountBufferedLines());
+		return resolved;
 	}
-	return count;
+
+	auto from_end_distance = selection.MaxFromEndDistance();
+	idx_t tail_window = 0;
+	if (from_end_distance > 0 && from_end_distance <= static_cast<int64_t>(MAX_TAIL_MEMO_LINES)) {
+		tail_window = static_cast<idx_t>(from_end_distance);
+	}
+	vector<int64_t> tail_starts;
+	int64_t total_lines = reader->CountRemainingLines(tail_window, tail_starts);
+	resolved.ResolveFromEnd(total_lines);
+
+	// The remembered offsets cover lines [first_memo .. total_lines].
+	int64_t first_memo = total_lines - static_cast<int64_t>(tail_starts.size()) + 1;
+	int64_t min_line = resolved.MinLine();
+	if (!tail_starts.empty() && min_line >= first_memo && min_line <= total_lines) {
+		int64_t resume_offset = tail_starts[static_cast<idx_t>(min_line - first_memo)];
+		file.Seek(static_cast<idx_t>(resume_offset));
+		reader = make_uniq<BufferedLineReader>(file, resume_offset);
+		line_number = min_line - 1;
+	} else {
+		file.Seek(0);
+		reader = make_uniq<BufferedLineReader>(file);
+		line_number = 0;
+	}
+	return resolved;
 }
 
 static bool OpenNextFile(ReadTextLinesGlobalState &state, const ReadTextLinesBindData &bind_data) {
@@ -353,19 +519,8 @@ static bool OpenNextFile(ReadTextLinesGlobalState &state, const ReadTextLinesBin
 			if (bind_data.line_selection.HasFromEndReferences()) {
 				// From-end references (e.g. '+2' = 2nd line from the end) need
 				// the total line count before any line can be emitted.
-				int64_t total_lines;
-				if (state.current_file->CanSeek()) {
-					total_lines = CountLinesInStream(*state.reader);
-					state.current_file->Seek(0);
-					state.reader = make_uniq<BufferedLineReader>(*state.current_file);
-				} else {
-					// Pipes and streams cannot rewind after counting: buffer
-					// the whole stream and serve lines from the buffer.
-					state.reader->SlurpAll();
-					total_lines = state.reader->CountBufferedLines();
-				}
-				state.resolved_selection = bind_data.line_selection;
-				state.resolved_selection.ResolveFromEnd(total_lines);
+				state.resolved_selection = PrepareFromEndScan(*state.current_file, state.reader,
+				                                              bind_data.line_selection, state.current_line_number);
 			} else {
 				state.resolved_selection = bind_data.line_selection;
 			}
@@ -381,11 +536,74 @@ static bool OpenNextFile(ReadTextLinesGlobalState &state, const ReadTextLinesBin
 	return false;
 }
 
+// =============================================================================
+// LineOutputWriter
+//
+// Writes the four output columns (line_number, content, byte_offset,
+// file_path) straight into the chunk's vectors.
+//
+// The obvious `Vector::SetValue(row, Value(...))` costs a heap-allocated
+// StringValueInfo per string cell and re-runs the UTF-8 check the scan has
+// already done, and it did that four times per line -- on a 2M-line file that
+// was more than half the scan. Writing the vectors directly costs one copy of
+// the line into the chunk's string heap and nothing else.
+//
+// file_path is the same string for every line of a source, so it is added to
+// the heap once per source rather than once per row. The heap is reset with
+// the chunk, so the writer is per-invocation and re-adds the path each time.
+// =============================================================================
+class LineOutputWriter {
+public:
+	explicit LineOutputWriter(DataChunk &output)
+	    : content_vector(output.data[1]), path_vector(output.data[3]),
+	      line_numbers(FlatVector::GetData<int64_t>(output.data[0])),
+	      contents(FlatVector::GetData<string_t>(output.data[1])),
+	      byte_offsets(FlatVector::GetData<int64_t>(output.data[2])),
+	      paths(FlatVector::GetData<string_t>(output.data[3])) {
+	}
+
+	// Point subsequent rows at `file_path`. `source_token` is anything that
+	// changes when the source does (the file index, the lateral input row), so
+	// that the path is only re-added when it actually differs.
+	void SetSource(const string &file_path, idx_t source_token) {
+		if (has_path && source_token == cached_token) {
+			return;
+		}
+		// Building a Value used to reject a path that is not valid UTF-8; keep
+		// rejecting it, but once per source instead of once per line.
+		if (!Value::StringIsValid(file_path.c_str(), file_path.size())) {
+			throw ErrorManager::InvalidUnicodeError(file_path, "value construction");
+		}
+		cached_path = StringVector::AddString(path_vector, file_path);
+		cached_token = source_token;
+		has_path = true;
+	}
+
+	void Write(idx_t row, int64_t line_number, const string &content, int64_t byte_offset) {
+		line_numbers[row] = line_number;
+		contents[row] = StringVector::AddString(content_vector, content);
+		byte_offsets[row] = byte_offset;
+		paths[row] = cached_path;
+	}
+
+private:
+	Vector &content_vector;
+	Vector &path_vector;
+	int64_t *line_numbers;
+	string_t *contents;
+	int64_t *byte_offsets;
+	string_t *paths;
+	string_t cached_path;
+	idx_t cached_token = 0;
+	bool has_path = false;
+};
+
 static void ReadTextLinesFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
 	auto &bind_data = data_p.bind_data->Cast<ReadTextLinesBindData>();
 	auto &state = data_p.global_state->Cast<ReadTextLinesGlobalState>();
 
 	idx_t output_row = 0;
+	LineOutputWriter writer(output);
 
 	while (output_row < STANDARD_VECTOR_SIZE) {
 		if (state.file_finished) {
@@ -393,6 +611,7 @@ static void ReadTextLinesFunction(ClientContext &context, TableFunctionInput &da
 				break;
 			}
 		}
+		writer.SetSource(state.current_file_path, state.file_index);
 
 		while (output_row < STANDARD_VECTOR_SIZE && !state.file_finished) {
 			string line;
@@ -435,10 +654,8 @@ static void ReadTextLinesFunction(ClientContext &context, TableFunctionInput &da
 				    state.current_line_number, state.current_file_path);
 			}
 
-			output.data[0].SetValue(output_row, Value::BIGINT(state.current_line_number));
-			output.data[1].SetValue(output_row, Value(ApplyLineTrim(line, bind_data.trim_mode)));
-			output.data[2].SetValue(output_row, Value::BIGINT(line_start_offset));
-			output.data[3].SetValue(output_row, Value(state.current_file_path));
+			writer.Write(output_row, state.current_line_number, ApplyLineTrim(line, bind_data.trim_mode),
+			             line_start_offset);
 
 			output_row++;
 		}
@@ -606,6 +823,7 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 	}
 
 	idx_t output_row = 0;
+	LineOutputWriter writer(output);
 
 	while (output_row < STANDARD_VECTOR_SIZE) {
 		// Need to open a new file?
@@ -641,20 +859,8 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 
 				if (bind_data.line_selection.HasFromEndReferences()) {
 					// From-end references need the total line count up front.
-					int64_t total_lines;
-					if (state.current_file->CanSeek()) {
-						total_lines = CountLinesInStream(*state.reader);
-						state.current_file->Seek(0);
-						state.reader = make_uniq<BufferedLineReader>(*state.current_file);
-					} else {
-						// Pipes (e.g. a per-row shellfs command) cannot rewind
-						// after counting: buffer the whole stream and serve
-						// lines from the buffer.
-						state.reader->SlurpAll();
-						total_lines = state.reader->CountBufferedLines();
-					}
-					state.resolved_selection = bind_data.line_selection;
-					state.resolved_selection.ResolveFromEnd(total_lines);
+					state.resolved_selection = PrepareFromEndScan(*state.current_file, state.reader,
+					                                              bind_data.line_selection, state.current_line_number);
 				} else {
 					state.resolved_selection = bind_data.line_selection;
 				}
@@ -670,6 +876,7 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 		// Read lines from the current source. The reader persists in operator
 		// state, so the parse position survives this operator's
 		// HAVE_MORE_OUTPUT re-invocations.
+		writer.SetSource(state.current_file_path, state.current_row);
 		while (output_row < STANDARD_VECTOR_SIZE && state.file_open) {
 			string line;
 			int64_t line_start_offset;
@@ -710,10 +917,8 @@ static OperatorResultType ReadTextLinesLateralInOut(ExecutionContext &context, T
 			}
 
 			// Output the line
-			output.data[0].SetValue(output_row, Value::BIGINT(state.current_line_number));
-			output.data[1].SetValue(output_row, Value(ApplyLineTrim(line, bind_data.trim_mode)));
-			output.data[2].SetValue(output_row, Value::BIGINT(line_start_offset));
-			output.data[3].SetValue(output_row, Value(state.current_file_path));
+			writer.Write(output_row, state.current_line_number, ApplyLineTrim(line, bind_data.trim_mode),
+			             line_start_offset);
 
 			output_row++;
 		}
