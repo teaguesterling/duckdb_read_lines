@@ -47,6 +47,54 @@ struct ReadTextLinesGlobalState : public GlobalTableFunctionState {
 	      resolved_selection(LineSelection::All()) {
 	}
 
+	// Deliberately single-threaded, after measuring. Kept here rather than left
+	// implicit because "1" has been the value since the first commit and read
+	// like an unexamined default.
+	//
+	// It is also load-bearing as the code stands: the open handle, the reader,
+	// the line cursor and the per-file resolved selection all live in this
+	// global state and there is no local state, so a second thread would race
+	// on all four. Raising the number is a rewrite of the scan, not a knob.
+	//
+	// Whether that rewrite is worth doing:
+	//
+	//   - The barrier is line_number. It is a required output column and must
+	//     be the true 1-based number of the line in the file, so a thread that
+	//     starts at a byte offset cannot number its lines until every byte
+	//     before it has been counted. Resynchronising to the next terminator
+	//     (which for us is '\n', '\r\n' or a lone '\r', and may straddle the
+	//     split) gives correct line *boundaries* but not correct line
+	//     *numbers*. Getting those needs either a serial prefix pass over the
+	//     whole file or a count-blocks / prefix-sum / emit-blocks design that
+	//     reads the file twice.
+	//
+	//   - The ceiling is real but modest. A full scan of a 125MB / 2M-line file
+	//     costs ~570ms of CPU; a non-materialising count of the same file (what
+	//     the prefix phase would cost, serially) is ~160ms. So a two-phase
+	//     parallel scan lands somewhere around 160ms + 410ms/threads before any
+	//     of the coordination overhead - call it 3x on a large single file,
+	//     against the 1.6x that came for free from not building a Value per
+	//     output cell. Cold page cache tracks warm here, so this is CPU, not
+	//     I/O, and threads would in principle divide it.
+	//
+	//   - The cost is not only complexity. Today a scan emits files in glob
+	//     order and lines in file order, deterministically; 78 multi-row
+	//     assertions in the suite are written against that order with no
+	//     ORDER BY. Parallel emission - even the easy per-file kind, which is
+	//     otherwise trivially correct because line numbers restart per file -
+	//     gives that up, and for a line-reading function the order is very
+	//     plausibly what callers rely on.
+	//
+	//   - The early exit would need re-deriving too: a bounded selection like
+	//     '1-100' currently stops the scan as soon as it passes the last range
+	//     and finishes a 125MB file in ~0ms. Blocks scheduled ahead of that
+	//     point would have to be mapped from line numbers to byte ranges,
+	//     which is the same information the scan does not have up front.
+	//
+	// So: not parallelised, because the ordering guarantee is worth more than
+	// a 3x on the largest inputs and the single-threaded path had cheaper wins
+	// left in it. Revisit if a workload turns up where a single very large file
+	// is the bottleneck and the caller is content to sort.
 	idx_t MaxThreads() const override {
 		return 1;
 	}
