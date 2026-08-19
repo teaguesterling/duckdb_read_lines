@@ -102,21 +102,15 @@ spec -- the `L` is what marks a fragment as a line reference rather than some
 other tool's anchor.
 
 The [SWHID](https://www.swhid.org/specification/v1.1/6.Qualified_identifiers/)
-`lines` qualifier is accepted for the same reason -- it is a named qualifier of
-a qualified identifier, not part of the object it identifies:
-
-```sql
-read_lines('file.py;lines=10-20')
-read_lines('file.py;lines=42')
-read_lines('swh:1:cnt:94a9ed02...;origin=https://example.org;lines=11-12')
-```
-
-Qualifiers may appear in any order: only `;lines=` is removed, every other
-qualifier is left in place for whatever resolves the identifier. The same one
-grammar applies behind the `=`. Note that only the *syntax* is supported --
-resolving `swh:` identifiers against the Software Heritage archive is a
-different feature and is not implemented, so such a path fails as an
-unresolvable path, never because of its line spec.
+`;lines=10-20` qualifier is deliberately **not** implemented, and this is not an
+oversight. `#` is structurally reserved, `;` is not: it is an ordinary character
+in a path segment, so only SWHID's own grammar makes `;lines=` detachable, and a
+path really named `data;lines=2.txt` is indistinguishable from a decorated one.
+The qualifier is also only coherent alongside resolution of the `swh:`
+identifier it qualifies, which belongs to an extension that can resolve SWHIDs
+rather than to a generic line reader. `#L...` works on a SWHID string just as it
+does on any other path, so nothing is lost. A path containing `;lines=` is
+treated literally.
 
 Rules:
 
@@ -124,11 +118,9 @@ Rules:
   `weird#name.txt` still reads as that file.
 - Per RFC 3986 the fragment starts at the *first* `#`, and a query string
   (`?...`) comes before it and stays part of the locator, since a filesystem may
-  need it (presigned URLs, VFS options). A `;lines=` inside a query string is a
-  query parameter and is left alone.
-- Naming the lines twice is an error, never a silent choice: `#L...` or
-  `;lines=...` together with a `lines` argument, with each other, or with a
-  `:N-M` suffix, is rejected.
+  need it (presigned URLs, VFS options).
+- Naming the lines twice is an error, never a silent choice: `#L...` together
+  with a `lines` argument, or with a `:N-M` suffix, is rejected.
 - Some filesystems parse the path themselves and *throw* on a decorated path
   instead of reporting no match. The line spec is still applied in that case;
   if no interpretation of the path resolves, that filesystem's own error is
