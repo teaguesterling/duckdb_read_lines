@@ -1,9 +1,10 @@
 # name: test/sql/read_lines_from_end.test
-# description: From-end references resolved against a seekable file must return
-#              the same line numbers, content and byte offsets as a plain scan,
-#              including when the reader resumes by seeking into the middle of
-#              the file rather than rewinding to the start.
-# group: [read_lines]
+# description: From-end refs on a seekable file match a plain scan
+# group: [sql]
+
+# Line numbers, content and byte offsets must be identical to a plain scan,
+# including when the reader resumes by seeking into the middle of the file
+# rather than rewinding to the start.
 
 require read_lines
 
