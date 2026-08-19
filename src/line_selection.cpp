@@ -776,13 +776,14 @@ std::pair<string, LineSelection> LineSelection::ParsePathWithLineSpec(const stri
 // A downstream filesystem therefore never sees it, and "#L10-L20" is the line
 // anchor GitHub and GitLab already put in the address bar.
 //
-// The SWHID 'lines' qualifier is detachable in the same way - it is a named
-// qualifier of a qualified identifier, not part of the object it identifies:
-// "swh:1:cnt:94a9ed...;origin=https://example.org;lines=11-12". Note that only
-// the *syntax* is handled here; resolving swh: identifiers against the Software
-// Heritage archive is a different feature and is not implemented.
+// The SWHID ';lines=' qualifier is deliberately NOT recognised. It rests on a
+// weaker guarantee than the fragment: ';' is an ordinary character in a path
+// segment, so only SWHID's own grammar makes the text detachable, and it is
+// only coherent alongside resolution of the swh: identifier it qualifies -
+// which belongs to whatever extension resolves those, not to a generic line
+// reader. "#L..." already covers the same need on a SWHID string.
 //
-// These forms are only consulted after the literal path has failed to resolve
+// The fragment is only consulted after the literal path has failed to resolve
 // (see ReadTextLinesBind), which keeps the rule monotone: a file whose name
 // really contains '#' still wins over any decorated interpretation of it.
 // =============================================================================
@@ -863,10 +864,10 @@ static bool TryParseLineSpecString(const string &spec, LineSelection &result) {
 }
 
 // Normalise the body of a URI-form spec into the ordinary line-spec grammar.
-// There is only one grammar: the delimiter ("#L", ";lines=") introduces exactly
-// what ":" already accepts. On top of that an 'L' immediately in front of any
-// number is tolerated and dropped, so the GitHub spelling "L123-L456" is not a
-// second form but the plain range "123-456", and a context suffix or any future
+// There is only one grammar: the "#L" delimiter introduces exactly what ":"
+// already accepts. On top of that an 'L' immediately in front of any number is
+// tolerated and dropped, so the GitHub spelling "L123-L456" is not a second
+// form but the plain range "123-456", and a context suffix or any future
 // addition to the grammar works after the delimiter automatically.
 static string NormalizeLineSpecBody(const string &body) {
 	string spec;
@@ -892,41 +893,12 @@ static bool NormalizeFragmentSpec(const string &fragment, string &result) {
 	return true;
 }
 
-// Find the SWHID 'lines' qualifier. A qualified identifier may carry several
-// ';'-separated qualifiers in any order (';origin=', ';visit=', ';anchor=',
-// ';path=', ';lines='), so the value ends at the next ';' and every other
-// qualifier is left untouched for whatever resolves the identifier.
-static bool FindLinesQualifier(const string &text, size_t &start, size_t &length, string &value, bool &duplicated) {
-	static const char *QUALIFIER = ";lines=";
-	static const size_t QUALIFIER_LEN = 7;
-
-	// Qualifier names are case-insensitive for our purposes; the lowered copy
-	// keeps byte offsets aligned with the original (ASCII case folding only).
-	string lowered = StringUtil::Lower(text);
-	size_t pos = lowered.find(QUALIFIER);
-	if (pos == string::npos) {
-		return false;
-	}
-	size_t value_start = pos + QUALIFIER_LEN;
-	size_t value_end = text.find(';', value_start);
-	if (value_end == string::npos) {
-		value_end = text.size();
-	}
-	start = pos;
-	length = value_end - pos;
-	value = text.substr(value_start, value_end - value_start);
-	duplicated = lowered.find(QUALIFIER, value_start) != string::npos;
-	return true;
-}
-
 const char *LineSpecSourceName(LineSpecSource source) {
 	switch (source) {
 	case LineSpecSource::COLON:
 		return "':'";
 	case LineSpecSource::FRAGMENT:
 		return "'#L'";
-	case LineSpecSource::QUALIFIER:
-		return "';lines='";
 	default:
 		return "none";
 	}
@@ -938,49 +910,18 @@ ParsedPathSpec ParsePathLineSpec(const string &path) {
 	// the URI is dereferenced.
 	size_t hash_pos = path.find('#');
 	string base = hash_pos == string::npos ? path : path.substr(0, hash_pos);
-	string fragment_suffix = hash_pos == string::npos ? string() : path.substr(hash_pos);
 
 	// RFC 3986 3.4: the query comes *before* the fragment and, unlike the
 	// fragment, it is part of what the filesystem resolves (presigned URLs, VFS
-	// options), so it stays on the locator. It is split off here only so that a
-	// ';lines=' inside a query string - where it means a query parameter, not a
-	// SWHID qualifier - is not mistaken for a line spec.
-	size_t query_pos = base.find('?');
-	string hierarchical = query_pos == string::npos ? base : base.substr(0, query_pos);
-	string query_suffix = query_pos == string::npos ? string() : base.substr(query_pos);
+	// options), so it stays on `base` and reaches the filesystem untouched.
 
 	string normalized;
 	LineSelection fragment_selection = LineSelection::All();
 	bool has_fragment = hash_pos != string::npos && NormalizeFragmentSpec(path.substr(hash_pos + 1), normalized) &&
 	                    TryParseLineSpecString(normalized, fragment_selection);
 
-	size_t qualifier_start = 0;
-	size_t qualifier_length = 0;
-	string qualifier_value;
-	bool qualifier_duplicated = false;
-	LineSelection qualifier_selection = LineSelection::All();
-	bool has_qualifier =
-	    FindLinesQualifier(hierarchical, qualifier_start, qualifier_length, qualifier_value, qualifier_duplicated) &&
-	    TryParseLineSpecString(NormalizeLineSpecBody(qualifier_value), qualifier_selection);
-
-	// Naming the lines twice is an error, never a silent choice.
-	if (has_fragment && has_qualifier) {
-		throw InvalidInputException("read_lines: path \"%s\" carries both a '#L' line spec and a ';lines=' line "
-		                            "spec; use only one",
-		                            path);
-	}
-	if (has_qualifier && qualifier_duplicated) {
-		throw InvalidInputException("read_lines: path \"%s\" carries more than one ';lines=' line spec; use only one",
-		                            path);
-	}
-
 	if (has_fragment) {
 		return ParsedPathSpec {base, std::move(fragment_selection), LineSpecSource::FRAGMENT};
-	}
-	if (has_qualifier) {
-		string locator = hierarchical.substr(0, qualifier_start) +
-		                 hierarchical.substr(qualifier_start + qualifier_length) + query_suffix + fragment_suffix;
-		return ParsedPathSpec {locator, std::move(qualifier_selection), LineSpecSource::QUALIFIER};
 	}
 
 	auto legacy = LineSelection::ParsePathWithLineSpec(path);

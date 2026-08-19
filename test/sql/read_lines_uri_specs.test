@@ -188,6 +188,37 @@ FROM read_lines('test/data/frag#L2.txt', lines := 3);
 ----
 3	frag three
 
+# ';lines=' is not a delimiter: a file whose name contains it reads as itself.
+# The SWHID 'lines' qualifier is deliberately not implemented (only SWHID's own
+# grammar makes that text detachable, and it is only coherent alongside swh:
+# resolution, which belongs elsewhere), so this is 5 lines, not 'qual two'.
+query I
+SELECT count(*) FROM read_lines('test/data/qual;lines=2.txt');
+----
+5
+
+# ... and the fragment still applies over such a name
+query II
+SELECT line_number, rtrim(content, chr(10) || chr(13))
+FROM read_lines('test/data/qual;lines=2.txt#L3');
+----
+3	qual three
+
+# The other direction is the reason it is not implemented: 'simple.txt' exists,
+# so a rule that stripped ';lines=2' would silently return line 2 of a file the
+# caller did not name. Nothing is stripped, so this is a missing path.
+statement error
+SELECT * FROM read_lines('test/data/simple.txt;lines=2');
+----
+No files found that match the pattern "test/data/simple.txt;lines=2"
+
+# A full SWHID is a path like any other: with no filesystem registered for the
+# scheme it simply does not resolve, and its ';lines=' means nothing here
+statement error
+SELECT * FROM read_lines('swh:1:cnt:94a9ed024d3859793618152ea559a168bbcbb5e2;origin=https://example.org;lines=11-12');
+----
+No files found that match the pattern
+
 # The legacy ':' form is unchanged
 query II
 SELECT line_number, rtrim(content, chr(10) || chr(13))
