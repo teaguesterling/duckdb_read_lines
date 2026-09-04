@@ -744,8 +744,13 @@ static unique_ptr<FunctionData> ReadTextLinesLateralBind(ClientContext &context,
 	// For in_out functions, additional positional arguments appear in input_table_names.
 	// The argument value is stored as the "column name"; string literals come
 	// with surrounding quotes that must be stripped.
+	//
+	// input_table_names is another vector that became vector<Identifier> on DuckDB
+	// v2.0 -- the Identifier change reaches past the bind `names` parameter -- and
+	// Identifier does not implicitly convert to string, so the runtime value has to
+	// cross the boundary explicitly. CompatNameStr is the identity on v1.5.
 	auto table_name_arg = [&](idx_t index) -> string {
-		string arg = input.input_table_names[index];
+		string arg = CompatNameStr(input.input_table_names[index]);
 		if (arg.size() >= 2 && arg.front() == '\'' && arg.back() == '\'') {
 			arg = arg.substr(1, arg.size() - 2);
 		}
