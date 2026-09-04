@@ -30,38 +30,60 @@
 // string to an identifier is meant to be a deliberate act at the call site -- so
 // a boundary helper is needed rather than an implicit conversion.
 //
-// Probed SEPARATELY from the vector-header change above: these are independent
-// upstream changes, and tying them to one macro would silently pick the wrong
-// branch if they ever land in different releases.
+// This probe gates ONLY whether an Identifier overload of CompatNameStr can be
+// declared. It deliberately does NOT decide CompatName -- see below.
 #if __has_include("duckdb/common/identifier.hpp")
 #define DUCKDB_HAS_IDENTIFIER 1
 #include "duckdb/common/identifier.hpp"
 #endif
 
+#include "duckdb/function/table_function.hpp"
+#include <utility>
+
 namespace duckdb {
 
 // --- bind-signature name type -------------------------------------------------
 // Used wherever a bind callback receives or fills a vector of column names.
-// Note that string LITERALS convert implicitly on both lines (Identifier has an
-// implicit const char* constructor), so `names.push_back("content")` is
-// unchanged -- only the signatures and the runtime-string boundaries move.
-#ifdef DUCKDB_HAS_IDENTIFIER
-using CompatName = Identifier;
-inline string CompatNameStr(const Identifier &id) {
-	return id.GetIdentifierName();
-}
-inline Identifier CompatMakeName(string name) {
-	return Identifier(std::move(name));
-}
-#else
-using CompatName = string;
+//
+// DERIVED FROM DUCKDB, NOT PROBED FOR. `__has_include(identifier.hpp)` is the
+// obvious test and it is WRONG here, because identifier.hpp was backported to
+// the stable branch WITHOUT changing table_function_bind_t. Verified against
+// three heads:
+//
+//   v1.5-variegata @ b155d6f63c (our pin)  no identifier.hpp   bind: vector<string>
+//   v1.5-variegata @ branch tip            HAS identifier.hpp  bind: vector<string>
+//   main (v2.0)                            HAS identifier.hpp  bind: vector<Identifier>
+//
+// So the header probe is right today only by the accident that our pin predates
+// the backport; the next routine submodule bump would flip CompatName to
+// Identifier on a DuckDB that still wants strings, and every bind signature in
+// this extension would stop compiling at once.
+//
+// TableFunctionBindInput::input_table_names has the same element type as the
+// bind out-parameter on both lines (table_function.hpp :110/:288 on the pin,
+// :123/:318 on main), so asking DuckDB what its own name type IS cannot drift --
+// it is the very thing that changed.
+using CompatName = typename std::remove_reference<decltype(
+    std::declval<TableFunctionBindInput &>().input_table_names)>::type::value_type;
+
+// String LITERALS convert implicitly on both lines (Identifier's const char*
+// constructor is intentionally implicit), so `names.push_back("content")` is
+// unchanged -- only the signatures and the RUNTIME-string boundaries move.
 inline string CompatNameStr(const string &name) {
 	return name;
 }
-inline string CompatMakeName(string name) {
-	return name;
+#ifdef DUCKDB_HAS_IDENTIFIER
+// Not ambiguous with the overload above even when both exist and CompatName is
+// still string: Identifier's constructor from string is explicit, so a string
+// argument has exactly one viable candidate.
+inline string CompatNameStr(const Identifier &id) {
+	return id.GetIdentifierName();
 }
 #endif
+
+inline CompatName CompatMakeName(string name) {
+	return CompatName(std::move(name));
+}
 
 // --- LogicalType alias ---------------------------------------------------------
 // v1.5: void SetAlias(string)               -- mutates in place
@@ -93,32 +115,49 @@ inline LogicalType CompatWithAliasImpl(TYPE type, string alias, std::false_type)
 	return type;
 }
 
-template <class TYPE = LogicalType>
-inline LogicalType CompatWithAlias(TYPE type, string alias) {
-	return CompatWithAliasImpl(std::move(type), std::move(alias), CompatHasWithAlias<TYPE>());
+// The ENTRY POINT is deliberately NOT a template. A `template <class TYPE =
+// LogicalType>` form looks equivalent but is not: the default template argument
+// is inert because deduction wins, so the very common call
+//
+//     CompatWithAlias(LogicalType::VARCHAR, "md")
+//
+// deduces TYPE = LogicalTypeId -- LogicalType::VARCHAR is a static constexpr
+// LogicalTypeId, not a LogicalType -- and hard-errors inside the shim with
+// "request for member 'SetAlias' in 'type', which is of non-class type
+// 'duckdb::LogicalTypeId'", on the PINNED build. A concrete parameter restores
+// the implicit LogicalTypeId -> LogicalType conversion at the call site. Only
+// the Impl overloads stay templated, which is all the tag dispatch needs.
+inline LogicalType CompatWithAlias(LogicalType type, string alias) {
+	return CompatWithAliasImpl(std::move(type), std::move(alias), CompatHasWithAlias<LogicalType>());
 }
 
 // --- Vector::ToUnifiedFormat ---------------------------------------------------
-// v2.0 dropped the count parameter. Probed and dispatched the same way.
+// v1.5: ToUnifiedFormat(count, data)  -- the only overload
+// v2.0: ToUnifiedFormat(data)         -- plus the count form kept as [[deprecated]]
+//
+// PROBE FOR THE COUNT-FREE OVERLOAD, not the count-taking one. v2.0 did not
+// remove the count form, it deprecated it, so a probe for the count form is true
+// on BOTH versions and the shim would always take the deprecated path -- silently
+// never reaching the new API it exists to call. The count-free form is the one
+// that exists only on v2.0, so it is the one that discriminates.
 template <class T, class = void>
-struct CompatToUnifiedTakesCount : std::false_type {};
+struct CompatToUnifiedWithoutCount : std::false_type {};
 template <class T>
-struct CompatToUnifiedTakesCount<T, decltype(void(std::declval<T &>().ToUnifiedFormat(
-                                        idx_t(0), std::declval<UnifiedVectorFormat &>())))> : std::true_type {};
+struct CompatToUnifiedWithoutCount<T, decltype(void(std::declval<T &>().ToUnifiedFormat(
+                                          std::declval<UnifiedVectorFormat &>())))> : std::true_type {};
 
 template <class VEC>
-inline void CompatToUnifiedFormatImpl(VEC &vec, idx_t count, UnifiedVectorFormat &data, std::true_type) {
-	vec.ToUnifiedFormat(count, data);
+inline void CompatToUnifiedFormatImpl(VEC &vec, idx_t, UnifiedVectorFormat &data, std::true_type) {
+	vec.ToUnifiedFormat(data);
 }
 template <class VEC>
 inline void CompatToUnifiedFormatImpl(VEC &vec, idx_t count, UnifiedVectorFormat &data, std::false_type) {
-	(void)count;
-	vec.ToUnifiedFormat(data);
+	vec.ToUnifiedFormat(count, data);
 }
 
 template <class VEC = Vector>
 inline void CompatToUnifiedFormat(VEC &vec, idx_t count, UnifiedVectorFormat &data) {
-	CompatToUnifiedFormatImpl(vec, count, data, CompatToUnifiedTakesCount<VEC>());
+	CompatToUnifiedFormatImpl(vec, count, data, CompatToUnifiedWithoutCount<VEC>());
 }
 
 // --- FlatVector mutable data ---------------------------------------------------
