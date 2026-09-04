@@ -101,7 +101,7 @@ struct ReadTextLinesGlobalState : public GlobalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> ReadTextLinesBind(ClientContext &context, TableFunctionBindInput &input,
-                                                  vector<LogicalType> &return_types, vector<string> &names) {
+                                                  vector<LogicalType> &return_types, vector<CompatName> &names) {
 	auto &fs = FileSystem::GetFileSystem(context);
 	auto input_path = input.inputs[0].GetValue<string>();
 
@@ -556,10 +556,10 @@ class LineOutputWriter {
 public:
 	explicit LineOutputWriter(DataChunk &output)
 	    : content_vector(output.data[1]), path_vector(output.data[3]),
-	      line_numbers(FlatVector::GetData<int64_t>(output.data[0])),
-	      contents(FlatVector::GetData<string_t>(output.data[1])),
-	      byte_offsets(FlatVector::GetData<int64_t>(output.data[2])),
-	      paths(FlatVector::GetData<string_t>(output.data[3])) {
+	      line_numbers(CompatFlatDataMutable<int64_t>(output.data[0])),
+	      contents(CompatFlatDataMutable<string_t>(output.data[1])),
+	      byte_offsets(CompatFlatDataMutable<int64_t>(output.data[2])),
+	      paths(CompatFlatDataMutable<string_t>(output.data[3])) {
 	}
 
 	// Point subsequent rows at `file_path`. `source_token` is anything that
@@ -736,7 +736,7 @@ struct ReadTextLinesLateralState : public LocalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> ReadTextLinesLateralBind(ClientContext &context, TableFunctionBindInput &input,
-                                                         vector<LogicalType> &return_types, vector<string> &names) {
+                                                         vector<LogicalType> &return_types, vector<CompatName> &names) {
 	LineSelection line_selection = LineSelection::All();
 	LineTrimMode trim_mode = LineTrimMode::NONE;
 	bool ignore_errors = false;
