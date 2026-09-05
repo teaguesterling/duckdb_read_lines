@@ -12,6 +12,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Forward-compat canary: intentionally builds against duckdb `main` (the v2.0
+  # line, `v2.0-cyanoptera`). duckdb/community-extensions builds every release PR
+  # against that version via build_next.yml with no per-extension opt-out, so this
+  # job is the early warning for it. Expected to go red on upstream API drift;
+  # informational, NOT a merge blocker -- merge-readiness is judged on the stable
+  # build below.
+  #
+  # Restricted to workflow_dispatch and pushes to main on purpose: `push` and
+  # `pull_request` both fire on the same commit and a PR's check rollup includes
+  # both, so an unrestricted canary would show red on every PR. And this must be
+  # `if:` rather than `continue-on-error:` -- a job that calls a REUSABLE workflow
+  # accepts only a fixed set of keys, and `continue-on-error` makes the whole
+  # workflow fail to parse, scheduling zero jobs.
+  duckdb-next-build:
+    name: Canary — build against DuckDB main (advisory)
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
+    with:
+      duckdb_version: main
+      ci_tools_version: main
+      extension_name: read_lines
+
   duckdb-stable-build:
     name: Build extension binaries
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.4

@@ -35,7 +35,7 @@ struct ParseTextLinesGlobalState : public GlobalTableFunctionState {
 };
 
 static unique_ptr<FunctionData> ParseTextLinesBind(ClientContext &context, TableFunctionBindInput &input,
-                                                   vector<LogicalType> &return_types, vector<string> &names) {
+                                                   vector<LogicalType> &return_types, vector<CompatName> &names) {
 	auto text = input.inputs[0].GetValue<string>();
 
 	// Parse named parameters
