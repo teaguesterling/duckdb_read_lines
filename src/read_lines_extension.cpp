@@ -110,8 +110,17 @@ std::string ReadLinesExtension::Version() const {
 
 } // namespace duckdb
 
-// Use the new DuckDB C++ extension entry point (for loadable extension)
-#ifdef DUCKDB_BUILD_LOADABLE_EXTENSION
+// Use the new DuckDB C++ extension entry point (for loadable extension).
+//
+// Deliberately NOT guarded on DUCKDB_BUILD_LOADABLE_EXTENSION. v1.5.x defines
+// that macro from extension/extension_build_tools.cmake; v2.0-cyanoptera still
+// reads it in duckdb.h but no longer defines it anywhere, so the guard silently
+// compiled this block away and the extension exported no entry point. Linux and
+// Windows linked anyway; wasm (-Wundefined -Werror) and macOS
+// (-Wl,-exported_symbol) did not:
+//
+//   emcc: error: undefined exported symbol: "_read_lines_duckdb_cpp_init"
+//   Undefined symbols for architecture arm64: "_read_lines_duckdb_cpp_init"
 extern "C" {
 
 DUCKDB_CPP_EXTENSION_ENTRY(read_lines, loader) {
@@ -119,7 +128,6 @@ DUCKDB_CPP_EXTENSION_ENTRY(read_lines, loader) {
 	extension.Load(loader);
 }
 }
-#endif
 
 #ifndef DUCKDB_EXTENSION_MAIN
 #error DUCKDB_EXTENSION_MAIN not defined
