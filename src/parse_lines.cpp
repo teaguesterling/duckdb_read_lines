@@ -1,6 +1,7 @@
 #include "read_lines_extension.hpp"
 #include "line_selection.hpp"
 #include "duckdb_compat.hpp"
+#include "named_parameter_compat.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
@@ -269,11 +270,13 @@ TableFunction ParseLinesFunction() {
 	                   ParseTextLinesInit);
 
 	// Named parameters
-	func.named_parameters["lines"] = LogicalType::ANY; // Can be int, string, or list
-	func.named_parameters["trim"] = LogicalType::ANY;  // BOOLEAN or 'endings'/'left'/'right'/'both'/'none'
-	func.named_parameters["before"] = LogicalType::BIGINT;
-	func.named_parameters["after"] = LogicalType::BIGINT;
-	func.named_parameters["context"] = LogicalType::BIGINT;
+	DeclareNamedParameters(func, {
+	                                 {"lines", LogicalType::ANY}, // Can be int, string, or list
+	                                 {"trim", LogicalType::ANY},  // BOOLEAN or 'endings'/'left'/'right'/'both'/'none'
+	                                 {"before", LogicalType::BIGINT},
+	                                 {"after", LogicalType::BIGINT},
+	                                 {"context", LogicalType::BIGINT},
+	                             });
 
 	return func;
 }
