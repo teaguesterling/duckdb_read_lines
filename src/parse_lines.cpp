@@ -271,8 +271,8 @@ TableFunction ParseLinesFunction() {
 
 	// Named parameters
 	DeclareNamedParameters(func, {
-	                                 {"lines", LogicalType::ANY},    // Can be int, string, or list
-	                                 {"trim", LogicalType::ANY},     // BOOLEAN or 'endings'/'left'/'right'/'both'/'none'
+	                                 {"lines", LogicalType::ANY}, // Can be int, string, or list
+	                                 {"trim", LogicalType::ANY},  // BOOLEAN or 'endings'/'left'/'right'/'both'/'none'
 	                                 {"before", LogicalType::BIGINT},
 	                                 {"after", LogicalType::BIGINT},
 	                                 {"context", LogicalType::BIGINT},
