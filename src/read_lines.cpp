@@ -2,6 +2,7 @@
 #include "line_selection.hpp"
 #include "compat.hpp"
 #include "duckdb_compat.hpp"
+#include "named_parameter_compat.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/common/file_system.hpp"
@@ -670,31 +671,37 @@ TableFunctionSet ReadLinesFunction() {
 	// Single argument: read_lines(path)
 	TableFunction func1("read_lines", {LogicalType::VARCHAR}, ReadTextLinesFunction, ReadTextLinesBind,
 	                    ReadTextLinesInit);
-	func1.named_parameters["lines"] = LogicalType::ANY;
-	func1.named_parameters["trim"] = LogicalType::ANY;
-	func1.named_parameters["before"] = LogicalType::BIGINT;
-	func1.named_parameters["after"] = LogicalType::BIGINT;
-	func1.named_parameters["context"] = LogicalType::BIGINT;
-	func1.named_parameters["ignore_errors"] = LogicalType::BOOLEAN;
+	DeclareNamedParameters(func1, {
+	                                  {"lines", LogicalType::ANY},
+	                                  {"trim", LogicalType::ANY},
+	                                  {"before", LogicalType::BIGINT},
+	                                  {"after", LogicalType::BIGINT},
+	                                  {"context", LogicalType::BIGINT},
+	                                  {"ignore_errors", LogicalType::BOOLEAN},
+	                              });
 	set.AddFunction(func1);
 
 	// Two arguments: read_lines(path, lines)
 	TableFunction func2("read_lines", {LogicalType::VARCHAR, LogicalType::ANY}, ReadTextLinesFunction,
 	                    ReadTextLinesBind, ReadTextLinesInit);
-	func2.named_parameters["trim"] = LogicalType::ANY;
-	func2.named_parameters["before"] = LogicalType::BIGINT;
-	func2.named_parameters["after"] = LogicalType::BIGINT;
-	func2.named_parameters["context"] = LogicalType::BIGINT;
-	func2.named_parameters["ignore_errors"] = LogicalType::BOOLEAN;
+	DeclareNamedParameters(func2, {
+	                                  {"trim", LogicalType::ANY},
+	                                  {"before", LogicalType::BIGINT},
+	                                  {"after", LogicalType::BIGINT},
+	                                  {"context", LogicalType::BIGINT},
+	                                  {"ignore_errors", LogicalType::BOOLEAN},
+	                              });
 	set.AddFunction(func2);
 
 	// Three arguments: read_lines(path, lines, trim)
 	TableFunction func3("read_lines", {LogicalType::VARCHAR, LogicalType::ANY, LogicalType::ANY}, ReadTextLinesFunction,
 	                    ReadTextLinesBind, ReadTextLinesInit);
-	func3.named_parameters["before"] = LogicalType::BIGINT;
-	func3.named_parameters["after"] = LogicalType::BIGINT;
-	func3.named_parameters["context"] = LogicalType::BIGINT;
-	func3.named_parameters["ignore_errors"] = LogicalType::BOOLEAN;
+	DeclareNamedParameters(func3, {
+	                                  {"before", LogicalType::BIGINT},
+	                                  {"after", LogicalType::BIGINT},
+	                                  {"context", LogicalType::BIGINT},
+	                                  {"ignore_errors", LogicalType::BOOLEAN},
+	                              });
 	set.AddFunction(func3);
 
 	return set;
