@@ -54,7 +54,14 @@ jobs:
       duckdb_version: v2.0-cyanoptera
       ci_tools_version: main
       extension_name: read_lines
-      exclude_archs: 'linux_arm64;linux_amd64_musl;linux_arm64_musl;osx_amd64;osx_arm64;windows_amd64;windows_arm64;windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
+      # osx_arm64 INCLUDED + reduced_ci_mode:'disabled' (property 5): a v2.0 x macOS
+      # behavioural bug (duck_hunt's missing-file handling) shipped undetected because
+      # its cyanoptera leg was Linux-only. reduced_ci_mode's 'auto' default also silently
+      # drops non-Linux arches on pull_request regardless of exclude_archs, so 'disabled'
+      # is required for the osx leg to run on PRs -- the event this gate is meant to cover.
+      # linux_amd64 + osx_arm64 only: a cheap build-AND-test v2.0 smoke, not a full matrix.
+      exclude_archs: 'linux_arm64;linux_amd64_musl;linux_arm64_musl;osx_amd64;windows_amd64;windows_arm64;windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads'
+      reduced_ci_mode: 'disabled'
       vcpkg_binary_sources: 'clear'
 
   # Drift guard: make the "no v2.0 leg" gap unrepresentable rather than merely fixed.
