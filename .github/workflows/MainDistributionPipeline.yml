@@ -55,12 +55,75 @@ jobs:
   # rather than only at descriptor-repoint time in the registry. One arch on purpose:
   # "does this build and test on the v2.0 line" is arch-independent, and each extra arch
   # is another from-source vcpkg build, so the rest are excluded to keep the loop fast.
+  # RESOLVE THE STAGED VERSION, then WALK BACK to a commit staging actually built.
+  #
+  # This leg used to pass `duckdb_version: v2.0-cyanoptera` -- the BRANCH NAME. That
+  # is fatal, measured on three sibling repos: ci_phase.py checks duckdb_version
+  # against a semver pattern, a branch name fails it, so the script resolves the
+  # branch's staged version for the download URL ONLY and never writes it back.
+  # CMake then stamps the extension `v2.0-cyanoptera` while the prebuilt libduckdb
+  # it links reports the staged version, DuckDB refuses a stamp that differs from
+  # its own version, and every test fails at `require read_lines`.
+  #
+  # Resolving gives a concrete (version, commit) pair that match each other.
+  #
+  # The WALK BACK is needed because staging does not build every commit. Measured
+  # 2026-10-26 over the newest 60 cyanoptera commits: 2 had a staged build, and
+  # there was a run of 54 CONSECUTIVE unstaged commits spanning only 0.8 days,
+  # while a build 3.1 days old was still served. Age does not explain the gaps, so
+  # resolving the TIP alone fails most of the time. DEPTH=150 is ~3x the worst run
+  # measured; the loop breaks at the first staged commit, so it costs nothing in
+  # the normal case.
+  duckdb-next-ref:
+    name: Next-line build — resolve DuckDB v2.0
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.resolve.outputs.commit }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEPTH=150
+          tip=$(git ls-remote https://github.com/duckdb/duckdb.git refs/heads/v2.0-cyanoptera | cut -f1)
+          [ -n "$tip" ] || { echo "::error::could not resolve duckdb v2.0-cyanoptera"; exit 1; }
+
+          tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+          git clone --quiet --filter=blob:none --no-checkout --depth "$DEPTH" \
+              --branch v2.0-cyanoptera https://github.com/duckdb/duckdb.git "$tmp/duckdb"
+
+          commit=""; version=""; behind=0
+          for sha in $(git -C "$tmp/duckdb" log --format=%H -n "$DEPTH"); do
+            v=$(curl -sSfL "https://duckdb-staging.duckdb.org/${sha:0:10}/latest_alpha_version.txt" 2>/dev/null | tr -d '[:space:]') || { behind=$((behind+1)); continue; }
+            if [[ "$v" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|rc|dev)[0-9]+)?$ ]]; then
+              commit="$sha"; version="$v"; break
+            fi
+            behind=$((behind+1))
+          done
+
+          if [ -z "$commit" ]; then
+            echo "::error::no staged DuckDB build for v2.0-cyanoptera in its last $DEPTH commits (tip $tip)"
+            exit 1
+          fi
+
+          echo "v2.0-cyanoptera tip is $tip"
+          echo "resolved $commit, version $version ($behind commit(s) behind the tip)"
+          if [ "$behind" -gt 0 ]; then
+            echo "::notice::the v2.0-cyanoptera tip ($tip) has no staged build; using $commit ($version), $behind commit(s) back"
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
   duckdb-cyanoptera-build:
     name: Build extension binaries (duckdb next, v2.0 line)
+    needs: duckdb-next-ref
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
     with:
-      duckdb_version: v2.0-cyanoptera
+      duckdb_version: ${{ needs.duckdb-next-ref.outputs.version }}
+      duckdb_commit: ${{ needs.duckdb-next-ref.outputs.commit }}
       ci_tools_version: main
       extension_name: read_lines
       # osx_arm64 INCLUDED + reduced_ci_mode:'disabled' (property 5): a v2.0 x macOS
@@ -91,21 +154,61 @@ jobs:
     name: DuckDB version drift guard
     runs-on: ubuntu-latest
     env:
-      DUCKDB_VERSION: v1.5.6
-      DUCKDB_NEXT: v2.0-cyanoptera
+      DUCKDB_VERSION: v2.0.0
+      DUCKDB_VARIANT: v1.5.6
     steps:
       - uses: actions/checkout@v4
-      - name: Assert both the stable and v2.0 lines are built
+      # DUCKDB_NEXT is GONE on purpose. The next leg no longer carries a literal
+      # version -- it takes `${{ needs.duckdb-next-ref.outputs.version }}`, which
+      # resolves at run time -- so a grep for a literal would either fail forever
+      # or have to be exempted, and an exemption is what lets a leg disappear
+      # unnoticed. Assert the RESOLVER exists instead: it is the thing whose
+      # absence would mean no v2.0-line coverage.
+      - name: Assert the shipping, variant and next lines are all built
         run: |
           wf=.github/workflows/MainDistributionPipeline.yml
           n=$(grep -c "duckdb_version: ${DUCKDB_VERSION}$" "$wf" || true)
-          m=$(grep -c "duckdb_version: ${DUCKDB_NEXT}$" "$wf" || true)
-          [ "$n" -ge 1 ] || { echo "::error::no job builds the stable line duckdb_version: ${DUCKDB_VERSION}"; exit 1; }
-          [ "$m" -ge 1 ] || { echo "::error::no job builds the v2.0 line duckdb_version: ${DUCKDB_NEXT} (cyanoptera leg missing/renamed?)"; exit 1; }
-          echo "drift guard OK: stable=${DUCKDB_VERSION} (${n} job(s)), next=${DUCKDB_NEXT} (${m} job(s))"
+          v=$(grep -c "duckdb_version: ${DUCKDB_VARIANT}$" "$wf" || true)
+          r=$(grep -c 'refs/heads/v2.0-cyanoptera' "$wf" || true)
+          c=$(grep -c 'needs.duckdb-next-ref.outputs.version' "$wf" || true)
+          [ "$n" -ge 1 ] || { echo "::error::no job builds the shipping line duckdb_version: ${DUCKDB_VERSION}"; exit 1; }
+          [ "$v" -ge 1 ] || { echo "::error::no job builds the variant line duckdb_version: ${DUCKDB_VARIANT}"; exit 1; }
+          [ "$r" -ge 1 ] || { echo "::error::the next-line resolver is gone (no ls-remote of refs/heads/v2.0-cyanoptera)"; exit 1; }
+          [ "$c" -ge 1 ] || { echo "::error::no job consumes the resolver output (next leg missing/renamed?)"; exit 1; }
+          echo "drift guard OK: shipping=${DUCKDB_VERSION} (${n}), variant=${DUCKDB_VARIANT} (${v}), resolver present (${r}), consumed (${c})"
 
+  # THE SHIPPING LINE, promoted from v1.5.6 to v2.0.0 (2026-10-26). The commit is
+  # upstream's v2.0.0 release TAG, measured with
+  # `git ls-remote --tags https://github.com/duckdb/duckdb.git v2.0.0`.
+  # A release tag matches ci_phase.py's semver pattern, so nothing is substituted
+  # and duckdb_commit selects the checkout.
   duckdb-stable-build:
     name: Build extension binaries
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v2.0-cyanoptera
+    with:
+      duckdb_version: v2.0.0
+      duckdb_commit: d54cbbe3df17e8e5ce68312f483b4155836112aa
+      ci_tools_version: v2.0-cyanoptera
+      extension_name: read_lines
+
+      # THE GUARD BELONGS ON THE SHIPPING LEG. Without it an extension that fails
+      # to load gives `ran tests: 0 passed, N skipped` and the leg still reports
+      # success -- measured on duckdb_webbed's unguarded canary (0 passed, 130
+      # skipped, conclusion success, 2026-10-25). The token is the literal this
+      # repo's own tests use, from `grep -rhoE '^require [a-z_]+' test/ | sort -u`
+      # (read_lines, plus the environmental `notwindows` and `shellfs`), never
+      # derived from EXT_NAME.
+      test_config: '{"test_env_variables": {"T": "--test-flags \"--require read_lines\" \"test/*\""}}'
+
+  # THE VARIANT LINE. v1.5.6 is what the community registry still builds for
+  # current installs, so it keeps a leg after the promote.
+  #
+  # NO test_config here, deliberately: `T ?=` is absent from
+  # duckdb_extension.Makefile on v1.5-variegata, so the variable is silently
+  # ignored on that ref. The guard above cannot be mirrored here, and `make
+  # test-require` is the local substitute.
+  duckdb-variegata-build:
+    name: Build extension binaries (DuckDB v1.5 variant)
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5-variegata
     with:
       duckdb_version: v1.5.6
@@ -114,11 +217,24 @@ jobs:
 
   code-quality-check:
     name: Code Quality Check
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.5-variegata
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v2.0-cyanoptera
     with:
-      duckdb_version: v1.5.6
-      ci_tools_version: v1.5-variegata
+      # duckdb_version is DEPRECATED on this workflow and does not pick the
+      # formatter -- upstream says so outright: "code quality checks use the
+      # checked-out duckdb submodule". It is the SUBMODULE BUMP that changes the
+      # formatter, which is why a promote reddens files no commit touched.
+      duckdb_version: v2.0.0
+      ci_tools_version: v2.0-cyanoptera
       extension_name: read_lines
+      # 'tidy' is kept as it was, but it currently lints NOTHING and that is not
+      # fixed here. ci-tools passes run-clang-tidy.py the TU selector
+      # '$(PROJ_DIR)src/.*/', whose trailing slash requires a SUBDIRECTORY of src/.
+      # This repo's .cpp files are flat in src/ and only headers live in
+      # src/include/, so zero translation units are selected. Measured on main run
+      # 39190186586, job 117861074222: the log goes straight from the
+      # run-clang-tidy.py invocation to "Post job cleanup", and the job passes in
+      # 47s. run-clang-tidy.py has no zero-TU guard. Fixing the selector belongs in
+      # its own PR, because it will surface real findings for the first time.
       format_checks: 'format;tidy'
 
   # The sqllogictest runner silently skips test/sql/read_lines_shellfs.test
