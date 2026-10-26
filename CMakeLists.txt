@@ -9,11 +9,8 @@ set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
 project(${TARGET_NAME})
 include_directories(src/include)
 
-set(EXTENSION_SOURCES
-    src/read_lines_extension.cpp
-    src/line_selection.cpp
-    src/read_lines.cpp
-    src/parse_lines.cpp)
+set(EXTENSION_SOURCES src/read_lines_extension.cpp src/line_selection.cpp
+                      src/read_lines.cpp src/parse_lines.cpp)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
