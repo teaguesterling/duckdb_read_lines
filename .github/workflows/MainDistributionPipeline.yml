@@ -208,7 +208,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DUCKDB_VERSION: v2.0.0
-      DUCKDB_VARIANT: v1.5.6
     steps:
       - uses: actions/checkout@v4
       # DUCKDB_NEXT is GONE on purpose. The next leg no longer carries a literal
@@ -217,18 +216,16 @@ jobs:
       # or have to be exempted, and an exemption is what lets a leg disappear
       # unnoticed. Assert the RESOLVER exists instead: it is the thing whose
       # absence would mean no v2.0-line coverage.
-      - name: Assert the shipping, variant and next lines are all built
+      - name: Assert the shipping and next lines are both built
         run: |
           wf=.github/workflows/MainDistributionPipeline.yml
           n=$(grep -c "duckdb_version: ${DUCKDB_VERSION}$" "$wf" || true)
-          v=$(grep -c "duckdb_version: ${DUCKDB_VARIANT}$" "$wf" || true)
           r=$(grep -c 'refs/heads/v2.0-cyanoptera' "$wf" || true)
           c=$(grep -c 'needs.duckdb-next-ref.outputs.version' "$wf" || true)
           [ "$n" -ge 1 ] || { echo "::error::no job builds the shipping line duckdb_version: ${DUCKDB_VERSION}"; exit 1; }
-          [ "$v" -ge 1 ] || { echo "::error::no job builds the variant line duckdb_version: ${DUCKDB_VARIANT}"; exit 1; }
           [ "$r" -ge 1 ] || { echo "::error::the next-line resolver is gone (no ls-remote of refs/heads/v2.0-cyanoptera)"; exit 1; }
           [ "$c" -ge 1 ] || { echo "::error::no job consumes the resolver output (next leg missing/renamed?)"; exit 1; }
-          echo "drift guard OK: shipping=${DUCKDB_VERSION} (${n}), variant=${DUCKDB_VARIANT} (${v}), resolver present (${r}), consumed (${c})"
+          echo "drift guard OK: shipping=${DUCKDB_VERSION} (${n}), resolver present (${r}), consumed (${c})"
 
   # THE SHIPPING LINE, promoted from v1.5.6 to v2.0.0 (2026-10-26). The commit is
   # upstream's v2.0.0 release TAG, measured with
@@ -253,20 +250,6 @@ jobs:
       # derived from EXT_NAME.
       test_config: '{"test_env_variables": {"T": "--test-flags \"--require read_lines\" \"test/*\""}}'
 
-  # THE VARIANT LINE. v1.5.6 is what the community registry still builds for
-  # current installs, so it keeps a leg after the promote.
-  #
-  # NO test_config here, deliberately: `T ?=` is absent from
-  # duckdb_extension.Makefile on v1.5-variegata, so the variable is silently
-  # ignored on that ref. The guard above cannot be mirrored here, and `make
-  # test-require` is the local substitute.
-  duckdb-variegata-build:
-    name: Build extension binaries (DuckDB v1.5 variant)
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5-variegata
-    with:
-      duckdb_version: v1.5.6
-      ci_tools_version: v1.5-variegata
-      extension_name: read_lines
 
   code-quality-check:
     name: Code Quality Check
@@ -290,30 +273,27 @@ jobs:
       # its own PR, because it will surface real findings for the first time.
       format_checks: 'format;tidy'
 
+  # NO CI COVERAGE FOR THE NON-SEEKABLE (pipe) READ PATHS, deliberately.
+  #
   # The sqllogictest runner silently skips test/sql/read_lines_shellfs.test
-  # ("require shellfs" is a skip, not a failure), so the non-seekable/pipe
-  # read paths get no coverage from the build job's `make test`. This job
-  # loads the built extension into a stock DuckDB CLI, installs shellfs from
-  # the community repository, and asserts the pipe behaviors directly.
-  pipe-tests:
-    name: Pipe tests (shellfs, non-seekable sources)
-    needs: duckdb-stable-build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: read_lines-v1.5.6-extension-linux_amd64
-          path: /tmp/read_lines_artifact
-
-      - name: Install DuckDB CLI v1.5.6
-        run: |
-          curl -sSL -o /tmp/duckdb_cli.zip \
-            https://github.com/duckdb/duckdb/releases/download/v1.5.6/duckdb_cli-linux-amd64.zip
-          unzip -o /tmp/duckdb_cli.zip -d /tmp/duckdb-cli
-
-      - name: Run pipe smoke tests
-        run: |
-          ./scripts/pipe_smoke_test.sh /tmp/duckdb-cli/duckdb \
-            /tmp/read_lines_artifact/read_lines.duckdb_extension
+  # ("require shellfs" is a skip, not a failure), so the build job's `make test`
+  # does not reach those paths. A `pipe-tests` job used to close that gap by
+  # loading the built extension into a stock DuckDB CLI alongside shellfs. It
+  # was retired with the v1.5.6 line (Teague, 2026-11-02): we do not need to
+  # test shellfs here.
+  #
+  # SHELLFS MOVED REPOSITORIES AT DuckDB 2.0, which is why that job could not
+  # simply follow the promote. From 2.0 on shellfs is distributed from
+  # Query.Farm, not the DuckDB community repository. The community repository
+  # still SERVES a v2.0.0 build (HTTP 200, measured 2026-11-02), so a
+  # reachability probe proves nothing: that build installs without complaint and
+  # then throws from its own init function --
+  #   Initialization function "shellfs_duckdb_cpp_init" ... threw an exception:
+  #   "The shellfs extension for DuckDB 2.0 and later is distributed from the
+  #    Query.Farm extension repository, not the DuckDB community repository."
+  # Query.Farm serves it for v2.0.0 on linux_amd64, osx_arm64 and windows_amd64,
+  # and NOT for v1.5.6 (404), so the split is exactly at 2.0.
+  #
+  # scripts/pipe_smoke_test.sh is KEPT and still asserts all 9 pipe behaviours.
+  # Run it locally against a built extension; its header carries the repository
+  # details. Nothing in this workflow depends on it.
