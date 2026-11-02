@@ -6,8 +6,24 @@
 # test/sql/read_lines_shellfs.test unless the shellfs extension is loadable
 # ("require shellfs" is a silent skip). This script provides that coverage by
 # loading the built extension into a stock DuckDB CLI, installing shellfs from
-# the community repository, and asserting the pipe behaviors exactly
+# the Query.Farm repository, and asserting the pipe behaviors exactly
 # (terminators included — no rtrim masking).
+#
+# SHELLFS MOVED REPOSITORIES AT DuckDB 2.0. From 2.0 on it is distributed from
+# Query.Farm, not the DuckDB community repository. The community repository still
+# SERVES a v2.0.0 shellfs artifact (HTTP 200, measured 2026-11-02), so a reachability
+# probe proves nothing: that build installs without complaint and then throws from
+# its own init function --
+#   Initialization function "shellfs_duckdb_cpp_init" ... threw an exception:
+#   "The shellfs extension for DuckDB 2.0 and later is distributed from the
+#    Query.Farm extension repository, not the DuckDB community repository."
+# Query.Farm serves it for v2.0.0 on linux_amd64, osx_arm64 and windows_amd64, and
+# NOT for v1.5.6 (404) -- the split is exactly at 2.0.
+#
+# If a stale community build is already cached in
+# ~/.duckdb/extensions/<version>/<arch>/, plain INSTALL will keep it and the load
+# will still fail. Use FORCE INSTALL once to replace it. CI runners are fresh, so
+# the plain form below is enough there.
 #
 # Usage: scripts/pipe_smoke_test.sh <duckdb-cli> <read_lines.duckdb_extension>
 # Local example:
@@ -21,7 +37,9 @@ EXTENSION="${2:?usage: pipe_smoke_test.sh <duckdb-cli> <extension-file>}"
 run_sql() {
 	"$DUCKDB" -unsigned -noheader -list -c "
 LOAD '$EXTENSION';
-INSTALL shellfs FROM community;
+SET allow_extension_repositories = 'allowed';
+CREATE EXTENSION REPOSITORY IF NOT EXISTS query_farm WITH PREFIX 'https://duckdb-extensions.query.farm';
+INSTALL shellfs FROM query_farm;
 LOAD shellfs;
 $1"
 }
