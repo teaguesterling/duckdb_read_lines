@@ -276,8 +276,10 @@ jobs:
   # The sqllogictest runner silently skips test/sql/read_lines_shellfs.test
   # ("require shellfs" is a skip, not a failure), so the non-seekable/pipe
   # read paths get no coverage from the build job's `make test`. This job
-  # loads the built extension into a stock DuckDB CLI, installs shellfs from
-  # the community repository, and asserts the pipe behaviors directly.
+  # loads the built extension into a stock DuckDB CLI, installs shellfs from the
+  # Query.Farm repository, and asserts the pipe behaviors directly. shellfs moved
+  # repositories at DuckDB 2.0: the community build still installs on v2.0.0 and
+  # then throws from its own init, so the script declares query_farm instead.
   pipe-tests:
     name: Pipe tests (shellfs, non-seekable sources)
     needs: duckdb-stable-build
