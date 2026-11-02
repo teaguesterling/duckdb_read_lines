@@ -273,42 +273,27 @@ jobs:
       # its own PR, because it will surface real findings for the first time.
       format_checks: 'format;tidy'
 
+  # NO CI COVERAGE FOR THE NON-SEEKABLE (pipe) READ PATHS, deliberately.
+  #
   # The sqllogictest runner silently skips test/sql/read_lines_shellfs.test
-  # ("require shellfs" is a skip, not a failure), so the non-seekable/pipe
-  # read paths get no coverage from the build job's `make test`. This job
-  # loads the built extension into a stock DuckDB CLI, installs shellfs from the
-  # Query.Farm repository, and asserts the pipe behaviors directly. shellfs moved
-  # repositories at DuckDB 2.0: the community build still installs on v2.0.0 and
-  # then throws from its own init, so the script declares query_farm instead.
-  pipe-tests:
-    name: Pipe tests (shellfs, non-seekable sources)
-    needs: duckdb-stable-build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: read_lines-v2.0.0-extension-linux_amd64
-          path: /tmp/read_lines_artifact
-
-      - name: Install DuckDB CLI v2.0.0
-        run: |
-          # NOTE THE ASSET RENAME, not just the version. Through v1.5.6 this was
-          # duckdb_cli-linux-amd64.zip (underscore, zip); from v2.0.0 it is
-          # duckdb-cli-linux-amd64.tar.gz (hyphen, tarball) holding a single
-          # `duckdb` at the archive root. The old URL 404s at v2.0.0, so the
-          # DOWNLOAD and the EXTRACTION both change, not just the version in the
-          # path. Measured 2026-11-02: HTTP 200, 24424037 bytes, and `tar -tzf`
-          # prints exactly `duckdb`. `tar` will not create its -C directory, which
-          # `unzip -d` did, hence the mkdir.
-          curl -sSL -o /tmp/duckdb_cli.tar.gz \
-            https://github.com/duckdb/duckdb/releases/download/v2.0.0/duckdb-cli-linux-amd64.tar.gz
-          mkdir -p /tmp/duckdb-cli
-          tar -xzf /tmp/duckdb_cli.tar.gz -C /tmp/duckdb-cli
-          chmod +x /tmp/duckdb-cli/duckdb
-
-      - name: Run pipe smoke tests
-        run: |
-          ./scripts/pipe_smoke_test.sh /tmp/duckdb-cli/duckdb \
-            /tmp/read_lines_artifact/read_lines.duckdb_extension
+  # ("require shellfs" is a skip, not a failure), so the build job's `make test`
+  # does not reach those paths. A `pipe-tests` job used to close that gap by
+  # loading the built extension into a stock DuckDB CLI alongside shellfs. It
+  # was retired with the v1.5.6 line (Teague, 2026-11-02): we do not need to
+  # test shellfs here.
+  #
+  # SHELLFS MOVED REPOSITORIES AT DuckDB 2.0, which is why that job could not
+  # simply follow the promote. From 2.0 on shellfs is distributed from
+  # Query.Farm, not the DuckDB community repository. The community repository
+  # still SERVES a v2.0.0 build (HTTP 200, measured 2026-11-02), so a
+  # reachability probe proves nothing: that build installs without complaint and
+  # then throws from its own init function --
+  #   Initialization function "shellfs_duckdb_cpp_init" ... threw an exception:
+  #   "The shellfs extension for DuckDB 2.0 and later is distributed from the
+  #    Query.Farm extension repository, not the DuckDB community repository."
+  # Query.Farm serves it for v2.0.0 on linux_amd64, osx_arm64 and windows_amd64,
+  # and NOT for v1.5.6 (404), so the split is exactly at 2.0.
+  #
+  # scripts/pipe_smoke_test.sh is KEPT and still asserts all 9 pipe behaviours.
+  # Run it locally against a built extension; its header carries the repository
+  # details. Nothing in this workflow depends on it.
