@@ -208,7 +208,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DUCKDB_VERSION: v2.0.0
-      DUCKDB_VARIANT: v1.5.6
     steps:
       - uses: actions/checkout@v4
       # DUCKDB_NEXT is GONE on purpose. The next leg no longer carries a literal
@@ -217,18 +216,16 @@ jobs:
       # or have to be exempted, and an exemption is what lets a leg disappear
       # unnoticed. Assert the RESOLVER exists instead: it is the thing whose
       # absence would mean no v2.0-line coverage.
-      - name: Assert the shipping, variant and next lines are all built
+      - name: Assert the shipping and next lines are both built
         run: |
           wf=.github/workflows/MainDistributionPipeline.yml
           n=$(grep -c "duckdb_version: ${DUCKDB_VERSION}$" "$wf" || true)
-          v=$(grep -c "duckdb_version: ${DUCKDB_VARIANT}$" "$wf" || true)
           r=$(grep -c 'refs/heads/v2.0-cyanoptera' "$wf" || true)
           c=$(grep -c 'needs.duckdb-next-ref.outputs.version' "$wf" || true)
           [ "$n" -ge 1 ] || { echo "::error::no job builds the shipping line duckdb_version: ${DUCKDB_VERSION}"; exit 1; }
-          [ "$v" -ge 1 ] || { echo "::error::no job builds the variant line duckdb_version: ${DUCKDB_VARIANT}"; exit 1; }
           [ "$r" -ge 1 ] || { echo "::error::the next-line resolver is gone (no ls-remote of refs/heads/v2.0-cyanoptera)"; exit 1; }
           [ "$c" -ge 1 ] || { echo "::error::no job consumes the resolver output (next leg missing/renamed?)"; exit 1; }
-          echo "drift guard OK: shipping=${DUCKDB_VERSION} (${n}), variant=${DUCKDB_VARIANT} (${v}), resolver present (${r}), consumed (${c})"
+          echo "drift guard OK: shipping=${DUCKDB_VERSION} (${n}), resolver present (${r}), consumed (${c})"
 
   # THE SHIPPING LINE, promoted from v1.5.6 to v2.0.0 (2026-10-26). The commit is
   # upstream's v2.0.0 release TAG, measured with
@@ -253,20 +250,6 @@ jobs:
       # derived from EXT_NAME.
       test_config: '{"test_env_variables": {"T": "--test-flags \"--require read_lines\" \"test/*\""}}'
 
-  # THE VARIANT LINE. v1.5.6 is what the community registry still builds for
-  # current installs, so it keeps a leg after the promote.
-  #
-  # NO test_config here, deliberately: `T ?=` is absent from
-  # duckdb_extension.Makefile on v1.5-variegata, so the variable is silently
-  # ignored on that ref. The guard above cannot be mirrored here, and `make
-  # test-require` is the local substitute.
-  duckdb-variegata-build:
-    name: Build extension binaries (DuckDB v1.5 variant)
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5-variegata
-    with:
-      duckdb_version: v1.5.6
-      ci_tools_version: v1.5-variegata
-      extension_name: read_lines
 
   code-quality-check:
     name: Code Quality Check
@@ -304,14 +287,24 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: read_lines-v1.5.6-extension-linux_amd64
+          name: read_lines-v2.0.0-extension-linux_amd64
           path: /tmp/read_lines_artifact
 
-      - name: Install DuckDB CLI v1.5.6
+      - name: Install DuckDB CLI v2.0.0
         run: |
-          curl -sSL -o /tmp/duckdb_cli.zip \
-            https://github.com/duckdb/duckdb/releases/download/v1.5.6/duckdb_cli-linux-amd64.zip
-          unzip -o /tmp/duckdb_cli.zip -d /tmp/duckdb-cli
+          # NOTE THE ASSET RENAME, not just the version. Through v1.5.6 this was
+          # duckdb_cli-linux-amd64.zip (underscore, zip); from v2.0.0 it is
+          # duckdb-cli-linux-amd64.tar.gz (hyphen, tarball) holding a single
+          # `duckdb` at the archive root. The old URL 404s at v2.0.0, so the
+          # DOWNLOAD and the EXTRACTION both change, not just the version in the
+          # path. Measured 2026-11-02: HTTP 200, 24424037 bytes, and `tar -tzf`
+          # prints exactly `duckdb`. `tar` will not create its -C directory, which
+          # `unzip -d` did, hence the mkdir.
+          curl -sSL -o /tmp/duckdb_cli.tar.gz \
+            https://github.com/duckdb/duckdb/releases/download/v2.0.0/duckdb-cli-linux-amd64.tar.gz
+          mkdir -p /tmp/duckdb-cli
+          tar -xzf /tmp/duckdb_cli.tar.gz -C /tmp/duckdb-cli
+          chmod +x /tmp/duckdb-cli/duckdb
 
       - name: Run pipe smoke tests
         run: |
