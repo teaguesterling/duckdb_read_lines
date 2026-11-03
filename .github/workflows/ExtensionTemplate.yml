@@ -3,7 +3,16 @@
 #     this workflow will be removed when scripts/bootstrap-template.py is run
 #
 name: Extension Template
-on: [push, pull_request,repository_dispatch]
+on:
+  # Pushes build only on main. A push to a PR branch fires a push run AND a
+  # pull_request run for the same commit, so every job built twice per push.
+  # The pull_request run is the one whose status matters. What the filter costs:
+  # a branch with no PR open gets no CI until the PR opens, and a tag push no
+  # longer starts a run. Nothing here deploys on tags.
+  push:
+    branches: [main]
+  pull_request:
+  repository_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' || github.sha }}
   cancel-in-progress: true
